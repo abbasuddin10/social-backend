@@ -174,6 +174,29 @@ app.post('/api/post-to-facebook', async (req, res) => {
     }
 });
 
+app.post('/api/reply-to-comment', async (req, res) => {
+    const { page_id, comment_id, reply_message } = req.body;
+    try {
+        // ডাটাবেজ থেকে টোকেন চেক করা
+        const result = await pool.query('SELECT access_token FROM social_accounts WHERE page_id = $1', [page_id]);
+        if (result.rows.length === 0) return res.status(404).send('Page not found!');
+        
+        const token = result.rows[0].access_token;
+
+        // ফেসবুক এপিআই কল করা
+        const replyUrl = `https://graph.facebook.com/v18.0/${comment_id}/comments`;
+        await axios.post(replyUrl, {
+            message: reply_message,
+            access_token: token
+        });
+
+        res.json({ success: true, message: "Reply posted successfully!" });
+    } catch (error) {
+        console.error("Reply Error:", error.response?.data || error.message);
+        res.status(500).json({ error: error.message });
+    }
+});  
+
 // সার্ভার পোর্ট কনফিগারেশন (রেন্ডার এবং লোকাল উভয় জায়গার জন্য)
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
