@@ -123,15 +123,21 @@ app.get('/auth/facebook/callback', async (req, res) => {
         // ঘ. (ঐচ্ছিক/প্রয়োজনীয়) Neon ডাটাবেজে পেজ ও টোকেন সেভ করার কোড
         // নোট: আপনার ডাটাবেজে facebook_pages টেবিল থাকতে হবে (page_id, page_name, access_token)
         // ঘ. Neon ডাটাবেজের social_accounts টেবিলে সঠিক কলাম অনুযায়ী সেভ করা
+       // ঘ. Neon ডাটাবেজে নিরাপদভাবে ডেটা সেভ বা আপডেট করা (কন্সট্রেইন্ট ছাড়াই কাজ করবে)
         for (const page of pages) {
-            const dbQuery = `
-                INSERT INTO social_accounts (page_id, access_token, is_active) 
-                VALUES ($1, $2, $3) 
-                ON CONFLICT (page_id) 
-                DO UPDATE SET access_token = $2, is_active = TRUE
-            `;
-            // এখানে page.id, page.access_token এবং true পাঠানো হলো
-            await pool.query(dbQuery, [page.id, page.access_token, true]);
+            // ১. চেক করা page_id দিয়ে আগে থেকেই কোনো রো আছে কি না
+            const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1';
+            const existing = await pool.query(checkQuery, [page.id]);
+
+            if (existing.rows.length > 0) {
+                // যদি থাকে, তবে শুধু টোকেন ও স্ট্যাটাস আপডেট করবে
+                const updateQuery = 'UPDATE social_accounts SET access_token = $1, is_active = TRUE WHERE page_id = $2';
+                await pool.query(updateQuery, [page.access_token, page.id]);
+            } else {
+                // না থাকলে নতুন রো ইনসার্ট করবে
+                const insertQuery = 'INSERT INTO social_accounts (page_id, access_token, is_active) VALUES ($1, $2, $3)';
+                await pool.query(insertQuery, [page.id, page.access_token, true]);
+            }
         }
 
         res.json({
