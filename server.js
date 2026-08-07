@@ -5,16 +5,13 @@ const cors = require('cors');
 
 const app = express();
 
-// মিডলওয়্যার
+// মিডলওয়্যার
 app.use(express.json());
 app.use(cors());
 
-// ⚠️ Neon Database-এর কানেকশন স্ট্রিং এখানে পেস্ট করুন
-// (Neon Dashboard -> Connection Details থেকে 'Pooled' সংযোগ লিংকটি কপি করে এখানে দিন)
-const NEON_DB_URL = 'postgresql://username:password@ep-something.pooler.region.aws.neon.tech/neondb?sslmode=require';
-
+// রেন্ডার ড্যাশবোর্ডের Environment Variable থেকে স্বয়ংক্রিয়ভাবে Neon ডাটাবেজ কানেকশন নেবে
 const pool = new Pool({
-  connectionString: NEON_DB_URL,
+  connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
@@ -28,11 +25,11 @@ app.post('/api/register', async (req, res) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
-    return res.status(400).json({ success: false, message: 'ইমেইল এবং পাসওয়ার্ড আবশ্যক!' });
+    return res.status(400).json({ success: false, message: 'ইমেইল এবং পাসওয়ার্ড আবশ্যক!' });
   }
 
   try {
-    // পাসওয়ার্ড সিকিউর বা হ্যাশ (Hash) করা
+    // পাসওয়ার্ড সিকিউর বা হ্যাশ (Hash) করা
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Neon ডাটাবেজে ডাটা ইনসার্ট করা
@@ -43,13 +40,13 @@ app.post('/api/register', async (req, res) => {
     
     res.status(201).json({
       success: true,
-      message: 'অ্যাকাউন্ট সফলভাবে তৈরি এবং Neon ডাটাবেজে সেভ হয়েছে!',
+      message: 'অ্যাকাউন্ট সফলভাবে তৈরি এবং Neon ডাটাবেজে সেভ হয়েছে!',
       user: result.rows[0]
     });
   } catch (err) {
     // ডুপ্লিকেট ইমেল দিলে এরর হ্যান্ডলিং (PostgreSQL code 23505)
     if (err.code === '23505') {
-      return res.status(400).json({ success: false, message: 'এই ইমেইল দিয়ে ইতোমধ্যে অ্যাকাউন্ট খোলা হয়েছে!' });
+      return res.status(400).json({ success: false, message: 'এই ইমেইল দিয়ে ইতোমধ্যে অ্যাকাউন্ট খোলা হয়েছে!' });
     }
     console.error('Register Error:', err);
     res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
@@ -61,7 +58,7 @@ app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
-    return res.status(400).json({ success: false, message: 'ইমেইল এবং পাসওয়ার্ড আবশ্যক!' });
+    return res.status(400).json({ success: false, message: 'ইমেইল এবং পাসওয়ার্ড আবশ্যক!' });
   }
 
   try {
@@ -70,20 +67,20 @@ app.post('/api/login', async (req, res) => {
     const result = await pool.query(query, [email]);
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'ইউজার পাওয়া যায়নি!' });
+      return res.status(404).json({ success: false, message: 'ইউজার পাওয়া যায়নি!' });
     }
 
     const user = result.rows[0];
 
-    // পাসওয়ার্ড ভেরিফাই করা
+    // পাসওয়ার্ড ভেরিফাই করা
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(401).json({ success: false, message: 'পাসওয়ার্ড ভুল হয়েছে!' });
+      return res.status(401).json({ success: false, message: 'পাসওয়ার্ড ভুল হয়েছে!' });
     }
 
     res.status(200).json({
       success: true,
-      message: 'সফলভাবে লগইন হয়েছে!',
+      message: 'সফলভাবে লগইন হয়েছে!',
       user: { id: user.id, email: user.email }
     });
   } catch (err) {
@@ -92,8 +89,8 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// পিসির ৩০০০ পোর্টে সার্ভার চালু করা
-const PORT = 3000;
+// সার্ভার পোর্ট কনফিগারেশন (রেন্ডার এবং লোকাল উভয় জায়গার জন্য)
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`=================================`);
   console.log(`সার্ভার সফলভাবে পোর্ট ${PORT}-এ রান হচ্ছে!`);
