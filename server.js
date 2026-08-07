@@ -150,6 +150,29 @@ app.get('/auth/facebook/callback', async (req, res) => {
         res.status(500).send('Authentication failed!');
     }
 });
+// ফেসবুক পেজে পোস্ট করার এপিআই
+app.post('/api/post-to-facebook', async (req, res) => {
+    const { page_id, message } = req.body;
+    try {
+        // ১. ডাটাবেজ থেকে ওই পেজের সর্বশেষ টোকেনটি খুঁজে বের করা
+        const result = await pool.query('SELECT access_token FROM social_accounts WHERE page_id = $1', [page_id]);
+        if (result.rows.length === 0) return res.status(404).send('Page not found!');
+        
+        const token = result.rows[0].access_token;
+
+        // ২. ফেসবুক গ্রাফ এপিআই-এর মাধ্যমে পোস্ট করা
+        const postUrl = `https://graph.facebook.com/v18.0/${page_id}/feed`;
+        const response = await axios.post(postUrl, {
+            message: message,
+            access_token: token
+        });
+
+        res.json({ success: true, postId: response.data.id });
+    } catch (error) {
+        console.error("Post Error:", error.response?.data || error.message);
+        res.status(500).json({ error: error.response?.data || error.message });
+    }
+});s
 
 // সার্ভার পোর্ট কনফিগারেশন (রেন্ডার এবং লোকাল উভয় জায়গার জন্য)
 const PORT = process.env.PORT || 3000;
