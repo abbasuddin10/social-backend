@@ -89,6 +89,46 @@ app.post('/api/login', async (req, res) => {
     res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
   }
 });
+// ৪. ফেসবুক কলব্যাক রাউট (Long-lived Token সহ আপডেট করা)
+app.get('/auth/facebook/callback', async (req, res) => {
+    const code = req.query.code;
+    if (!code) {
+        return res.status(400).send('Authorization code not found!');
+    }
+
+    try {
+        const appId = process.env.FACEBOOK_APP_ID;
+        const appSecret = process.env.FACEBOOK_APP_SECRET;
+        const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
+
+        // ১. শর্ট-লাইভ অ্যাক্সেস টোকেন পাওয়ার জন্য গ্রাফ এপিআই কল
+        const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
+        const tokenResponse = await axios.get(tokenUrl);
+        const shortLivedToken = tokenResponse.data.access_token;
+
+        // ২. শর্ট-লাইভ টোকেনকে লং-লাইভ টোকেনে (৬০ দিন মেয়াদী) কনভার্ট করার এপিআই কল
+        const longLivedUrl = `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken}`;
+        const longLivedResponse = await axios.get(longLivedUrl);
+        const longLivedAccessToken = longLivedResponse.data.access_token;
+
+        // ৩. লং-লাইভ টোকেন ব্যবহার করে ইউজারের পেজগুলোর লিস্ট এবং পেজ টোকেন ফেচ করা
+        const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${longLivedAccessToken}`;
+        const pagesResponse = await axios.get(pagesUrl);
+        const pages = pagesResponse.data.data;
+
+        // রেসপন্সে লং-লাইভ টোকেন এবং পেজ টোকেনগুলো দেখানো হচ্ছে
+        res.json({
+            success: true,
+            message: "Successfully upgraded to Long-lived Token and fetched pages!",
+            longLivedAccessToken: longLivedAccessToken,
+            pages: pages
+        });
+
+    } catch (error) {
+        console.error("Facebook Auth Error:", error.response?.data || error.message);
+        res.status(500).send('Authentication failed!');
+    }
+});
 
 // ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট (Facebook Auth Route)
 app.get('/auth/facebook', (req, res) => {
