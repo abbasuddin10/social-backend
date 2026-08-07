@@ -30,10 +30,8 @@ app.post('/api/register', async (req, res) => {
   }
 
   try {
-    // পাসওয়ার্ড সিকিউর বা হ্যাশ (Hash) করা
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Neon ডাটাবেজে ডাটা ইনসার্ট করা
     const query = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
     const values = [email, hashedPassword];
     
@@ -45,7 +43,6 @@ app.post('/api/register', async (req, res) => {
       user: result.rows[0]
     });
   } catch (err) {
-    // ডুপ্লিকেট ইমেল দিলে এরর হ্যান্ডলিং (PostgreSQL code 23505)
     if (err.code === '23505') {
       return res.status(400).json({ success: false, message: 'এই ইমেইল দিয়ে ইতোমধ্যে অ্যাকাউন্ট খোলা হয়েছে!' });
     }
@@ -63,7 +60,6 @@ app.post('/api/login', async (req, res) => {
   }
 
   try {
-    // ডাটাবেজ থেকে ইউজার চেক করা
     const query = 'SELECT * FROM users WHERE email = $1';
     const result = await pool.query(query, [email]);
 
@@ -73,7 +69,6 @@ app.post('/api/login', async (req, res) => {
 
     const user = result.rows[0];
 
-    // পাসওয়ার্ড ভেরিফাই করা
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(401).json({ success: false, message: 'পাসওয়ার্ড ভুল হয়েছে!' });
@@ -89,46 +84,6 @@ app.post('/api/login', async (req, res) => {
     res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
   }
 });
-// ৪. ফেসবুক কলব্যাক রাউট (Long-lived Token সহ আপডেট করা)
-app.get('/auth/facebook/callback', async (req, res) => {
-    const code = req.query.code;
-    if (!code) {
-        return res.status(400).send('Authorization code not found!');
-    }
-
-    try {
-        const appId = process.env.FACEBOOK_APP_ID;
-        const appSecret = process.env.FACEBOOK_APP_SECRET;
-        const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
-
-        // ১. শর্ট-লাইভ অ্যাক্সেস টোকেন পাওয়ার জন্য গ্রাফ এপিআই কল
-        const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
-        const tokenResponse = await axios.get(tokenUrl);
-        const shortLivedToken = tokenResponse.data.access_token;
-
-        // ২. শর্ট-লাইভ টোকেনকে লং-লাইভ টোকেনে (৬০ দিন মেয়াদী) কনভার্ট করার এপিআই কল
-        const longLivedUrl = `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken}`;
-        const longLivedResponse = await axios.get(longLivedUrl);
-        const longLivedAccessToken = longLivedResponse.data.access_token;
-
-        // ৩. লং-লাইভ টোকেন ব্যবহার করে ইউজারের পেজগুলোর লিস্ট এবং পেজ টোকেন ফেচ করা
-        const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${longLivedAccessToken}`;
-        const pagesResponse = await axios.get(pagesUrl);
-        const pages = pagesResponse.data.data;
-
-        // রেসপন্সে লং-লাইভ টোকেন এবং পেজ টোকেনগুলো দেখানো হচ্ছে
-        res.json({
-            success: true,
-            message: "Successfully upgraded to Long-lived Token and fetched pages!",
-            longLivedAccessToken: longLivedAccessToken,
-            pages: pages
-        });
-
-    } catch (error) {
-        console.error("Facebook Auth Error:", error.response?.data || error.message);
-        res.status(500).send('Authentication failed!');
-    }
-});
 
 // ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট (Facebook Auth Route)
 app.get('/auth/facebook', (req, res) => {
@@ -138,7 +93,7 @@ app.get('/auth/facebook', (req, res) => {
     res.redirect(fbLoginUrl);
 });
 
-// ৪. ফেসবুক কলব্যাক রাউট (Facebook Callback Route)
+// ৪. ফেসবুক কলব্যাক রাউট (Long-lived Token এবং Neon DB তে সেভ করার লজিক সহ)
 app.get('/auth/facebook/callback', async (req, res) => {
     const code = req.query.code;
     if (!code) {
@@ -150,22 +105,37 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const appSecret = process.env.FACEBOOK_APP_SECRET;
         const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
 
-        // অ্যাক্সেস টোকেন পাওয়ার জন্য ফেসবুক গ্রাফ এপিআই কল
+        // ক. শর্ট-লাইভ অ্যাক্সেস টোকেন পাওয়ার জন্য গ্রাফ এপিআই কল
         const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
-        
         const tokenResponse = await axios.get(tokenUrl);
-        const accessToken = tokenResponse.data.access_token;
+        const shortLivedToken = tokenResponse.data.access_token;
 
-        // ইউজারের পেজগুলোর লিস্ট এবং পেজ টোকেন ফেচ করা
-        const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${accessToken}`;
+        // খ. শর্ট-লাইভ টোকেনকে লং-লাইভ টোকেনে (৬০ দিন মেয়াদী) কনভার্ট করা
+        const longLivedUrl = `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken}`;
+        const longLivedResponse = await axios.get(longLivedUrl);
+        const longLivedAccessToken = longLivedResponse.data.access_token;
+
+        // গ. লং-লাইভ টোকেন ব্যবহার করে পেজগুলোর লিস্ট ফেচ করা
+        const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${longLivedAccessToken}`;
         const pagesResponse = await axios.get(pagesUrl);
         const pages = pagesResponse.data.data;
 
-        // সাময়িকভাবে রেসপন্স দেখছি (পরে এগুলো ডাটাবেজে সেভ করব)
+        // ঘ. (ঐচ্ছিক/প্রয়োজনীয়) Neon ডাটাবেজে পেজ ও টোকেন সেভ করার কোড
+        // নোট: আপনার ডাটাবেজে facebook_pages টেবিল থাকতে হবে (page_id, page_name, access_token)
+        for (const page of pages) {
+            const dbQuery = `
+                INSERT INTO facebook_pages (page_id, page_name, access_token) 
+                VALUES ($1, $2, $3) 
+                ON CONFLICT (page_id) 
+                DO UPDATE SET page_name = $2, access_token = $3
+            `;
+            await pool.query(dbQuery, [page.id, page.name, page.access_token]);
+        }
+
         res.json({
             success: true,
-            message: "Facebook Connected Successfully!",
-            accessToken: accessToken,
+            message: "Successfully upgraded to Long-lived Token, fetched pages, and saved to Neon DB!",
+            longLivedAccessToken: longLivedAccessToken,
             pages: pages
         });
 
