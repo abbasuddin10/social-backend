@@ -172,7 +172,7 @@ app.post('/api/post-to-facebook', async (req, res) => {
         console.error("Post Error:", error.response?.data || error.message);
         res.status(500).json({ error: error.response?.data || error.message });
     }
-});s
+});
 
 // সার্ভার পোর্ট কনফিগারেশন (রেন্ডার এবং লোকাল উভয় জায়গার জন্য)
 const PORT = process.env.PORT || 3000;
