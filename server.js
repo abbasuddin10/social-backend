@@ -2,6 +2,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
+const axios = require('axios'); // ফেসবুক এপিআই কল করার জন্য এটি দরকার হবে
 
 const app = express();
 
@@ -9,7 +10,7 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// রেন্ডার ড্যাশবোর্ডের Environment Variable থেকে স্বয়ংক্রিয়ভাবে Neon ডাটাবেজ কানেকশন নেবে
+// রেন্ডার ড্যাশবোর্ডের Environment Variable থেকে স্বয়ংক্রিয়ভাবে Neon ডাটাবেজ কানেকশন নেবে
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
@@ -89,7 +90,52 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// সার্ভার পোর্ট কনফিগারেশন (রেন্ডার এবং লোকাল উভয় জায়গার জন্য)
+// ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট (Facebook Auth Route)
+app.get('/auth/facebook', (req, res) => {
+    const appId = process.env.FACEBOOK_APP_ID;
+    const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
+    const fbLoginUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=pages_show_list,pages_manage_posts,pages_read_engagement`;
+    res.redirect(fbLoginUrl);
+});
+
+// ৪. ফেসবুক কলব্যাক রাউট (Facebook Callback Route)
+app.get('/auth/facebook/callback', async (req, res) => {
+    const code = req.query.code;
+    if (!code) {
+        return res.status(400).send('Authorization code not found!');
+    }
+
+    try {
+        const appId = process.env.FACEBOOK_APP_ID;
+        const appSecret = process.env.FACEBOOK_APP_SECRET;
+        const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
+
+        // অ্যাক্সেস টোকেন পাওয়ার জন্য ফেসবুক গ্রাফ এপিআই কল
+        const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
+        
+        const tokenResponse = await axios.get(tokenUrl);
+        const accessToken = tokenResponse.data.access_token;
+
+        // ইউজারের পেজগুলোর লিস্ট এবং পেজ টোকেন ফেচ করা
+        const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${accessToken}`;
+        const pagesResponse = await axios.get(pagesUrl);
+        const pages = pagesResponse.data.data;
+
+        // সাময়িকভাবে রেসপন্স দেখছি (পরে এগুলো ডাটাবেজে সেভ করব)
+        res.json({
+            success: true,
+            message: "Facebook Connected Successfully!",
+            accessToken: accessToken,
+            pages: pages
+        });
+
+    } catch (error) {
+        console.error("Facebook Auth Error:", error.response?.data || error.message);
+        res.status(500).send('Authentication failed!');
+    }
+});
+
+// সার্ভার পোর্ট কনফিগারেশন (রেন্ডার এবং লোকাল উভয় জায়গার জন্য)
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`=================================`);
