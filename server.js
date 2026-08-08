@@ -120,16 +120,12 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const pagesResponse = await axios.get(pagesUrl);
         const pages = pagesResponse.data.data;
 
-        // ঘ. (ঐচ্ছিক/প্রয়োজনীয়) Neon ডাটাবেজে পেজ ও টোকেন সেভ করার কোড
-        // নোট: আপনার ডাটাবেজে facebook_pages টেবিল থাকতে হবে (page_id, page_name, access_token)
-        // ঘ. Neon ডাটাবেজের social_accounts টেবিলে সঠিক কলাম অনুযায়ী সেভ করা
-       // ঘ. Neon ডাটাবেজে সঠিক ডেটা এবং updated_at আপডেট করার লজিক
+        // ঘ. Neon ডাটাবেজে সঠিক ডেটা এবং updated_at আপডেট করার লজিক
         for (const page of pages) {
             const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1';
             const existing = await pool.query(checkQuery, [page.id]);
 
             if (existing.rows.length > 0) {
-                // টোকেন, স্ট্যাটাস এবং বর্তমান সময় (updated_at) আপডেট করা
                 const updateQuery = 'UPDATE social_accounts SET access_token = $1, is_active = TRUE, updated_at = NOW() WHERE page_id = $2';
                 await pool.query(updateQuery, [page.access_token, page.id]);
             } else {
@@ -150,17 +146,15 @@ app.get('/auth/facebook/callback', async (req, res) => {
         res.status(500).send('Authentication failed!');
     }
 });
+
 // ফেসবুক পেজে পোস্ট করার এপিআই
 app.post('/api/post-to-facebook', async (req, res) => {
     const { page_id, message } = req.body;
     try {
-        // ১. ডাটাবেজ থেকে ওই পেজের সর্বশেষ টোকেনটি খুঁজে বের করা
         const result = await pool.query('SELECT access_token FROM social_accounts WHERE page_id = $1', [page_id]);
         if (result.rows.length === 0) return res.status(404).send('Page not found!');
         
         const token = result.rows[0].access_token;
-
-        // ২. ফেসবুক গ্রাফ এপিআই-এর মাধ্যমে পোস্ট করা
         const postUrl = `https://graph.facebook.com/v18.0/${page_id}/feed`;
         const response = await axios.post(postUrl, {
             message: message,
@@ -177,13 +171,10 @@ app.post('/api/post-to-facebook', async (req, res) => {
 app.post('/api/reply-to-comment', async (req, res) => {
     const { page_id, comment_id, reply_message } = req.body;
     try {
-        // ডাটাবেজ থেকে টোকেন চেক করা
         const result = await pool.query('SELECT access_token FROM social_accounts WHERE page_id = $1', [page_id]);
         if (result.rows.length === 0) return res.status(404).send('Page not found!');
         
         const token = result.rows[0].access_token;
-
-        // ফেসবুক এপিআই কল করা
         const replyUrl = `https://graph.facebook.com/v18.0/${comment_id}/comments`;
         await axios.post(replyUrl, {
             message: reply_message,
@@ -197,9 +188,9 @@ app.post('/api/reply-to-comment', async (req, res) => {
     }
 });  
 
-// ৫. ফেসবুক ওয়েবুক ভেরিফিকেশন (GET Route - Facebook Webhook Setup এর সময় এটি দরকার হয়)
+// ৫. ফেসবুক ওয়েবুক ভেরিফিকেশন (GET Route)
 app.get('/api/webhook', (req, res) => {
-    const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN || 'my_secure_verify_token'; // আপনার পছন্দমতো ভেরিফাই টোকেন দিতে পারেন
+    const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN || 'my_secure_verify_token';
 
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -217,38 +208,25 @@ app.get('/api/webhook', (req, res) => {
     }
 });
 
-// ৬. ফেসবুক ওয়েবুক ডেটা রিসিভ করার জন্য (POST Route - কমেন্ট বা ইনবক্স মেসেজ আসলে ফেসবুক এখানে পোস্ট করবে)
+// ৬. ফেসবুক ওয়েবুক ডেটা রিসিভ এবং n8n-এ ফরোয়ার্ড করার জন্য (POST Route)
 app.post('/api/webhook', async (req, res) => {
     const body = req.body;
 
     if (body.object === 'page') {
-        body.entry.forEach(async (entry) => {
-            // পেজের আইডি
-            const pageId = entry.id;
-
-            // কমেন্ট বা ফিড সংক্রান্ত ইভেন্ট হলে
-            if (entry.changes) {
-                for (const change of entry.changes) {
-                    if (change.field === 'feed' && change.value.item === 'comment') {
-                        const commentData = change.value;
-                        console.log('New Comment Received:', commentData);
-                        // এখানে আপনি চাইলে কমেন্টের ডেটা n8n-এ ফরোয়ার্ড করতে পারেন অথবা সরাসরি প্রসেস করতে পারেন
-                    }
+        try {
+            // n8n এ রিকোয়েস্ট পাঠানোর জন্য নিরাপদ লুপ
+            for (const entry of body.entry) {
+                // সরাসরি পুরো বডি বা এন্ট্রি ডেটা n8n-এর প্রোডাকশন বা টেস্ট ওয়েবুকে পাঠিয়ে দেওয়া হচ্ছে
+                if (process.env.N8N_WEBHOOK_URL) {
+                    await axios.post(process.env.N8N_WEBHOOK_URL, body);
+                    console.log('Webhook data successfully forwarded to n8n');
+                } else {
+                    console.error('N8N_WEBHOOK_URL is not defined in environment variables!');
                 }
             }
-
-            // ইনবক্স মেসেজ সংক্রান্ত ইভেন্ট হলে (Messaging)
-            if (entry.messaging) {
-                for (const messagingEvent of entry.messaging) {
-                    if (messagingEvent.message) {
-                        const senderId = messagingEvent.sender.id;
-                        const messageText = messagingEvent.message.text;
-                        console.log(`New Message from ${senderId}: ${messageText}`);
-                        // ইনবক্স মেসেজের লজিক এখানে হ্যান্ডেল করতে পারেন
-                    }
-                }
-            }
-        });
+        } catch (error) {
+            console.error('Error forwarding to n8n:', error.message);
+        }
 
         res.status(200).send('EVENT_RECEIVED');
     } else {
@@ -256,7 +234,7 @@ app.post('/api/webhook', async (req, res) => {
     }
 });
 
-// সার্ভার পোর্ট কনফিগারেশন (রেন্ডার এবং লোকাল উভয় জায়গার জন্য)
+// সার্ভার পোর্ট কনফিগারেশন
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`=================================`);
