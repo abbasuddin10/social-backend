@@ -120,17 +120,17 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const pagesResponse = await axios.get(pagesUrl);
         const pages = pagesResponse.data.data;
 
-        // ঘ. Neon ডাটাবেজে সঠিক ডেটা এবং updated_at আপডেট করার লজিক
+        // ঘ. Neon ডাটাবেজে সঠিক ডেটা, platform এবং updated_at আপডেট করার লজিক
         for (const page of pages) {
             const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1';
             const existing = await pool.query(checkQuery, [page.id]);
 
             if (existing.rows.length > 0) {
-                const updateQuery = 'UPDATE social_accounts SET access_token = $1, is_active = TRUE, updated_at = NOW() WHERE page_id = $2';
-                await pool.query(updateQuery, [page.access_token, page.id]);
+                const updateQuery = 'UPDATE social_accounts SET access_token = $1, is_active = TRUE, platform = $2, updated_at = NOW() WHERE page_id = $3';
+                await pool.query(updateQuery, [page.access_token, 'facebook', page.id]);
             } else {
-                const insertQuery = 'INSERT INTO social_accounts (page_id, access_token, is_active) VALUES ($1, $2, $3)';
-                await pool.query(insertQuery, [page.id, page.access_token, true]);
+                const insertQuery = 'INSERT INTO social_accounts (page_id, access_token, is_active, platform) VALUES ($1, $2, $3, $4)';
+                await pool.query(insertQuery, [page.id, page.access_token, true, 'facebook']);
             }
         }
 
