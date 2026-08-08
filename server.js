@@ -134,12 +134,8 @@ app.get('/auth/facebook/callback', async (req, res) => {
             }
         }
 
-        res.json({
-            success: true,
-            message: "Successfully upgraded to Long-lived Token, fetched pages, and saved to Neon DB!",
-            longLivedAccessToken: longLivedAccessToken,
-            pages: pages
-        });
+      // JSON রেসপন্স পাঠানোর বদলে এটি দিন:
+res.redirect('socialautomation://success?status=true');
 
     } catch (error) {
         console.error("Facebook Auth Error:", error.response?.data || error.message);
