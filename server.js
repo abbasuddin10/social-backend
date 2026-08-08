@@ -135,17 +135,35 @@ app.get('/auth/facebook/callback', async (req, res) => {
         }
 
         // সফলতার সুন্দর HTML রেসপন্স
+       // সফলতার সুন্দর HTML রেসপন্স (অটো ক্লোজ এবং বাটন সহ)
         res.send(`
             <html>
                 <head>
                     <title>Facebook Connected</title>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 </head>
-                <body style="font-family: Arial, sans-serif; text-align: center; padding-top: 100px; background-color: #f4f7f6;">
-                    <div style="background: white; padding: 30px; border-radius: 10px; display: inline-block; box-shadow: 0px 4px 10px rgba(0,0,0,0.1);">
-                        <h2 style="color: #28a745;">🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2>
-                        <p style="color: #555;">টোকেন সফলভাবে Neon Database-এ সেভ করা হয়েছে।</p>
-                        <p style="color: #888; font-size: 14px;">আপনি এখন এই ব্রাউজার ট্যাবটি বন্ধ করে আপনার অ্যাপে ফিরে যেতে পারেন।</p>
+                <body style="font-family: Arial, sans-serif; text-align: center; padding: 40px 20px; background-color: #f4f7f6;">
+                    <div style="background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0px 4px 12px rgba(0,0,0,0.1); max-width: 90%;">
+                        <h2 style="color: #28a745; margin-bottom: 10px;">🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2>
+                        <p style="color: #555; font-size: 15px;">টোকেন সফলভাবে Neon Database-এ সেভ করা হয়েছে।</p>
+                        
+                        <hr style="border: 0; height: 1px; background: #eee; margin: 20px 0;">
+                        
+                        <button onclick="closeWindow()" style="background-color: #0084ff; color: white; border: none; padding: 12px 24px; border-radius: 6px; font-size: 16px; cursor: pointer; font-weight: bold;">
+                            অ্যাপে ফিরে যান
+                        </button>
                     </div>
+
+                    <script>
+                        // ৩ সেকেন্ড পর অটোমেটিক উইন্ডো ক্লোজ করার চেষ্টা করবে
+                        setTimeout(() => {
+                            window.close();
+                        }, 3000);
+
+                        function closeWindow() {
+                            window.close();
+                        }
+                    </script>
                 </body>
             </html>
         `);
