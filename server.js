@@ -197,6 +197,65 @@ app.post('/api/reply-to-comment', async (req, res) => {
     }
 });  
 
+// ৫. ফেসবুক ওয়েবুক ভেরিফিকেশন (GET Route - Facebook Webhook Setup এর সময় এটি দরকার হয়)
+app.get('/api/webhook', (req, res) => {
+    const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN || 'my_secure_verify_token'; // আপনার পছন্দমতো ভেরিফাই টোকেন দিতে পারেন
+
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    if (mode && token) {
+        if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+            console.log('WEBHOOK_VERIFIED');
+            res.status(200).send(challenge);
+        } else {
+            res.sendStatus(403);
+        }
+    } else {
+        res.sendStatus(400);
+    }
+});
+
+// ৬. ফেসবুক ওয়েবুক ডেটা রিসিভ করার জন্য (POST Route - কমেন্ট বা ইনবক্স মেসেজ আসলে ফেসবুক এখানে পোস্ট করবে)
+app.post('/api/webhook', async (req, res) => {
+    const body = req.body;
+
+    if (body.object === 'page') {
+        body.entry.forEach(async (entry) => {
+            // পেজের আইডি
+            const pageId = entry.id;
+
+            // কমেন্ট বা ফিড সংক্রান্ত ইভেন্ট হলে
+            if (entry.changes) {
+                for (const change of entry.changes) {
+                    if (change.field === 'feed' && change.value.item === 'comment') {
+                        const commentData = change.value;
+                        console.log('New Comment Received:', commentData);
+                        // এখানে আপনি চাইলে কমেন্টের ডেটা n8n-এ ফরোয়ার্ড করতে পারেন অথবা সরাসরি প্রসেস করতে পারেন
+                    }
+                }
+            }
+
+            // ইনবক্স মেসেজ সংক্রান্ত ইভেন্ট হলে (Messaging)
+            if (entry.messaging) {
+                for (const messagingEvent of entry.messaging) {
+                    if (messagingEvent.message) {
+                        const senderId = messagingEvent.sender.id;
+                        const messageText = messagingEvent.message.text;
+                        console.log(`New Message from ${senderId}: ${messageText}`);
+                        // ইনবক্স মেসেজের লজিক এখানে হ্যান্ডেল করতে পারেন
+                    }
+                }
+            }
+        });
+
+        res.status(200).send('EVENT_RECEIVED');
+    } else {
+        res.sendStatus(404);
+    }
+});
+
 // সার্ভার পোর্ট কনফিগারেশন (রেন্ডার এবং লোকাল উভয় জায়গার জন্য)
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
