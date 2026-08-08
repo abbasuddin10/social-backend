@@ -187,6 +187,29 @@ app.post('/api/reply-to-comment', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });  
+// ফেসবুক ইনবক্স মেসেজে রিপ্লাই পাঠানোর এপিআই
+app.post('/api/reply-to-message', async (req, res) => {
+    const { page_id, recipient_id, message } = req.body;
+    try {
+        // ১. ডাটাবেজ থেকে ওই পেজের সঠিক টোকেন বের করা
+        const result = await pool.query('SELECT access_token FROM social_accounts WHERE page_id = $1', [page_id]);
+        if (result.rows.length === 0) return res.status(404).send('Page not found!');
+        
+        const token = result.rows[0].access_token;
+
+        // ২. ফেসবুক গ্রাফ এপিআই-এর মাধ্যমে মেসেজ পাঠানো (Send API)
+        const messageUrl = `https://graph.facebook.com/v18.0/me/messages?access_token=${token}`;
+        const response = await axios.post(messageUrl, {
+            recipient: { id: recipient_id },
+            message: { text: message }
+        });
+
+        res.json({ success: true, messageId: response.data.message_id });
+    } catch (error) {
+        console.error("Message Reply Error:", error.response?.data || error.message);
+        res.status(500).json({ error: error.response?.data || error.message });
+    }
+});
 
 // ৫. ফেসবুক ওয়েবুক ভেরিফিকেশন (GET Route)
 app.get('/api/webhook', (req, res) => {
