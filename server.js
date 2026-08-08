@@ -134,21 +134,27 @@ app.get('/auth/facebook/callback', async (req, res) => {
             }
         }
 
-      // JSON রেসপন্স পাঠানোর বদলে এটি দিন:
-res.send(`
+        // সফলতার সুন্দর HTML রেসপন্স
+        res.send(`
             <html>
                 <head>
                     <title>Facebook Connected</title>
                 </head>
                 <body style="font-family: Arial, sans-serif; text-align: center; padding-top: 100px; background-color: #f4f7f6;">
                     <div style="background: white; padding: 30px; border-radius: 10px; display: inline-block; box-shadow: 0px 4px 10px rgba(0,0,0,0.1);">
-                        <h2 style="color: #28a745;">🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2>
-                        <p style="color: #555;">টোকেন সফলভাবে Neon Database-এ সেভ করা হয়েছে।</p>
+                        <h2 style="color: #28a745;">🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2>
+                        <p style="color: #555;">টোকেন সফলভাবে Neon Database-এ সেভ করা হয়েছে।</p>
                         <p style="color: #888; font-size: 14px;">আপনি এখন এই ব্রাউজার ট্যাবটি বন্ধ করে আপনার অ্যাপে ফিরে যেতে পারেন।</p>
                     </div>
                 </body>
             </html>
         `);
+
+    } catch (error) {
+        console.error("Facebook Auth Error:", error.response?.data || error.message);
+        res.status(500).send('Authentication failed!');
+    }
+});
 
 // ফেসবুক পেজে পোস্ট করার এপিআই
 app.post('/api/post-to-facebook', async (req, res) => {
@@ -190,17 +196,16 @@ app.post('/api/reply-to-comment', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });  
+
 // ফেসবুক ইনবক্স মেসেজে রিপ্লাই পাঠানোর এপিআই
 app.post('/api/reply-to-message', async (req, res) => {
     const { page_id, recipient_id, message } = req.body;
     try {
-        // ১. ডাটাবেজ থেকে ওই পেজের সঠিক টোকেন বের করা
         const result = await pool.query('SELECT access_token FROM social_accounts WHERE page_id = $1', [page_id]);
         if (result.rows.length === 0) return res.status(404).send('Page not found!');
         
         const token = result.rows[0].access_token;
 
-        // ২. ফেসবুক গ্রাফ এপিআই-এর মাধ্যমে মেসেজ পাঠানো (Send API)
         const messageUrl = `https://graph.facebook.com/v18.0/me/messages?access_token=${token}`;
         const response = await axios.post(messageUrl, {
             recipient: { id: recipient_id },
@@ -240,9 +245,7 @@ app.post('/api/webhook', async (req, res) => {
 
     if (body.object === 'page') {
         try {
-            // n8n এ রিকোয়েস্ট পাঠানোর জন্য নিরাপদ লুপ
             for (const entry of body.entry) {
-                // সরাসরি পুরো বডি বা এন্ট্রি ডেটা n8n-এর প্রোডাকশন বা টেস্ট ওয়েবুকে পাঠিয়ে দেওয়া হচ্ছে
                 if (process.env.N8N_WEBHOOK_URL) {
                     await axios.post(process.env.N8N_WEBHOOK_URL, body);
                     console.log('Webhook data successfully forwarded to n8n');
