@@ -136,7 +136,38 @@ app.get('/auth/facebook/callback', async (req, res) => {
 
         // সফলতার সুন্দর HTML রেসপন্স
        // Success HTML response with guidance to close the browser tab
-       res.redirect('socialapp://success?status=success');
+       // সফলতার সুন্দর HTML রেসপন্স (ব্রাউজারে সাকসেস পেজ দেখানোর জন্য)
+        res.send(`
+            <html>
+                <head>
+                    <title>Facebook Connected</title>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                </head>
+                <body style="font-family: Arial, sans-serif; text-align: center; padding: 40px 20px; background-color: #f4f7f6;">
+                    <div style="background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0px 4px 12px rgba(0,0,0,0.1); max-width: 90%; margin-top: 50px;">
+                        <h2 style="color: #28a745; margin-bottom: 10px;">🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2>
+                        <p style="color: #555; font-size: 15px;">টোকেন সফলভাবে Neon Database-এ সেভ করা হয়েছে।</p>
+                        
+                        <hr style="border: 0; height: 1px; background: #eee; margin: 20px 0;">
+                        
+                        <p style="color: #666; font-size: 14px; margin-bottom: 20px;">দয়া করে এই ব্রাউজার ট্যাবটি কেটে বা ক্লোজ করে আপনার অ্যাপে ফিরে যান।</p>
+                        
+                        <button onclick="tryClose()" style="background-color: #0084ff; color: white; border: none; padding: 12px 24px; border-radius: 6px; font-size: 16px; cursor: pointer; font-weight: bold;">
+                            ট্যাব বন্ধ করুন
+                        </button>
+                    </div>
+
+                    <script>
+                        function tryClose() {
+                            window.close();
+                            setTimeout(() => {
+                                alert("দয়া করে ওপরের ট্যাব বা ক্রস (X) আইকনে ক্লিক করে ব্রাউজার বন্ধ করুন এবং অ্যাপে ফিরে যান।");
+                            }, 500);
+                        }
+                    </script>
+                </body>
+            </html>
+        `);
     } catch (error) {
         console.error("Facebook Auth Error:", error.response?.data || error.message);
         res.status(500).send('Authentication failed!');
