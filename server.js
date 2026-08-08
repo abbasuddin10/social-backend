@@ -135,13 +135,20 @@ app.get('/auth/facebook/callback', async (req, res) => {
         }
 
       // JSON রেসপন্স পাঠানোর বদলে এটি দিন:
-res.redirect('socialautomation://success?status=true');
-
-    } catch (error) {
-        console.error("Facebook Auth Error:", error.response?.data || error.message);
-        res.status(500).send('Authentication failed!');
-    }
-});
+res.send(`
+            <html>
+                <head>
+                    <title>Facebook Connected</title>
+                </head>
+                <body style="font-family: Arial, sans-serif; text-align: center; padding-top: 100px; background-color: #f4f7f6;">
+                    <div style="background: white; padding: 30px; border-radius: 10px; display: inline-block; box-shadow: 0px 4px 10px rgba(0,0,0,0.1);">
+                        <h2 style="color: #28a745;">🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2>
+                        <p style="color: #555;">টোকেন সফলভাবে Neon Database-এ সেভ করা হয়েছে।</p>
+                        <p style="color: #888; font-size: 14px;">আপনি এখন এই ব্রাউজার ট্যাবটি বন্ধ করে আপনার অ্যাপে ফিরে যেতে পারেন।</p>
+                    </div>
+                </body>
+            </html>
+        `);
 
 // ফেসবুক পেজে পোস্ট করার এপিআই
 app.post('/api/post-to-facebook', async (req, res) => {
