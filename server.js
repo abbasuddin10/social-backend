@@ -136,38 +136,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
 
         // সফলতার সুন্দর HTML রেসপন্স
        // Success HTML response with guidance to close the browser tab
-        res.send(`
-            <html>
-                <head>
-                    <title>Facebook Connected</title>
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                </head>
-                <body style="font-family: Arial, sans-serif; text-align: center; padding: 40px 20px; background-color: #f4f7f6;">
-                    <div style="background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0px 4px 12px rgba(0,0,0,0.1); max-width: 90%; margin-top: 50px;">
-                        <h2 style="color: #28a745; margin-bottom: 10px;">🎉 Facebook Page Connected Successfully!</h2>
-                        <p style="color: #555; font-size: 15px;">The token has been successfully saved to the Neon Database.</p>
-                        
-                        <hr style="border: 0; height: 1px; background: #eee; margin: 20px 0;">
-                        
-                        <p style="color: #666; font-size: 14px; margin-bottom: 20px;">Please close this browser tab and return to your app.</p>
-                        
-                        <button onclick="tryClose()" style="background-color: #0084ff; color: white; border: none; padding: 12px 24px; border-radius: 6px; font-size: 16px; cursor: pointer; font-weight: bold;">
-                            Close Tab
-                        </button>
-                    </div>
-
-                    <script>
-                        function tryClose() {
-                            window.close();
-                            setTimeout(() => {
-                                alert("Please close the browser tab or hit the back button manually to return to the app.");
-                            }, 500);
-                        }
-                    </script>
-                </body>
-            </html>
-        `);
-
+       res.redirect('socialapp://success?status=success');
     } catch (error) {
         console.error("Facebook Auth Error:", error.response?.data || error.message);
         res.status(500).send('Authentication failed!');
