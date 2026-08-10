@@ -3,7 +3,7 @@ const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
 const multer = require('multer');
-const upload = multer({ dest: 'uploads/' }); // সাময়িকভাবে ফাইল রাখার জন্য
+const upload = multer({ dest: 'uploads/' }); // সাময়িকভাবে ফাইল রাখার জন্য
 
 const axios = require('axios'); // ফেসবুক এপিআই কল করার জন্য এটি দরকার হবে
 
@@ -13,82 +13,85 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
+// 👇 এই লাইনটি এখানে বসানো হয়েছে, যাতে আপলোড করা ছবিগুলো ব্রাউজারে দেখা যায়
+app.use('/uploads', express.static('uploads'));
+
 // রেন্ডার ড্যাশবোর্ডের Environment Variable থেকে স্বয়ংক্রিয়ভাবে Neon ডাটাবেজ কানেকশন নেবে
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
 });
 
 // সার্ভার ঠিকঠাক চলছে কি না তা টেস্ট করার টেস্ট রুট
 app.get('/', (req, res) => {
-  res.send('Node.js Backend Server with Neon DB is running!');
+    res.send('Node.js Backend Server with Neon DB is running!');
 });
 
 // ১. রেজিস্ট্রেশন এপিআই (Register Endpoint)
 app.post('/api/register', async (req, res) => {
-  const { email, password } = req.body;
+    const { email, password } = req.body;
 
-  if (!email || !password) {
-    return res.status(400).json({ success: false, message: 'ইমেইল এবং পাসওয়ার্ড আবশ্যক!' });
-  }
-
-  try {
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const query = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
-    const values = [email, hashedPassword];
-    
-    const result = await pool.query(query, values);
-    
-    res.status(201).json({
-      success: true,
-      message: 'অ্যাকাউন্ট সফলভাবে তৈরি এবং Neon ডাটাবেজে সেভ হয়েছে!',
-      user: result.rows[0]
-    });
-  } catch (err) {
-    if (err.code === '23505') {
-      return res.status(400).json({ success: false, message: 'এই ইমেইল দিয়ে ইতোমধ্যে অ্যাকাউন্ট খোলা হয়েছে!' });
+    if (!email || !password) {
+        return res.status(400).json({ success: false, message: 'ইমেইল এবং পাসওয়ার্ড আবশ্যক!' });
     }
-    console.error('Register Error:', err);
-    res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
-  }
+
+    try {
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        const query = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
+        const values = [email, hashedPassword];
+        
+        const result = await pool.query(query, values);
+        
+        res.status(201).json({
+            success: true,
+            message: 'অ্যাকাউন্ট সফলভাবে তৈরি এবং Neon ডাটাবেজে সেভ হয়েছে!',
+            user: result.rows[0]
+        });
+    } catch (err) {
+        if (err.code === '23505') {
+            return res.status(400).json({ success: false, message: 'এই ইমেইল দিয়ে ইতোমধ্যে অ্যাকাউন্ট খোলা হয়েছে!' });
+        }
+        console.error('Register Error:', err);
+        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
+    }
 });
 
 // ২. লগইন এপিআই (Login Endpoint)
 app.post('/api/login', async (req, res) => {
-  const { email, password } = req.body;
+    const { email, password } = req.body;
 
-  if (!email || !password) {
-    return res.status(400).json({ success: false, message: 'ইমেইল এবং পাসওয়ার্ড আবশ্যক!' });
-  }
-
-  try {
-    const query = 'SELECT * FROM users WHERE email = $1';
-    const result = await pool.query(query, [email]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'ইউজার পাওয়া যায়নি!' });
+    if (!email || !password) {
+        return res.status(400).json({ success: false, message: 'ইমেইল এবং পাসওয়ার্ড আবশ্যক!' });
     }
 
-    const user = result.rows[0];
+    try {
+        const query = 'SELECT * FROM users WHERE email = $1';
+        const result = await pool.query(query, [email]);
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).json({ success: false, message: 'পাসওয়ার্ড ভুল হয়েছে!' });
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'ইউজার পাওয়া যায়নি!' });
+        }
+
+        const user = result.rows[0];
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: 'পাসওয়ার্ড ভুল হয়েছে!' });
+        }
+
+        res.status(200).json({
+            success: true,
+            message: 'সফলভাবে লগইন হয়েছে!',
+            user: { id: user.id, email: user.email }
+        });
+    } catch (err) {
+        console.error('Login Error:', err);
+        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
     }
-
-    res.status(200).json({
-      success: true,
-      message: 'সফলভাবে লগইন হয়েছে!',
-      user: { id: user.id, email: user.email }
-    });
-  } catch (err) {
-    console.error('Login Error:', err);
-    res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
-  }
 });
 
-// ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট (Facebook Auth Route - user_id বাধ্যতামূলক করা হয়েছে)
+// ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট (Facebook Auth Route - user_id বাধ্যতামূলক করা হয়েছে)
 app.get('/auth/facebook', (req, res) => {
     const userId = req.query.user_id; // ফ্লাটার অ্যাপ থেকে ইউজার আইডি পাঠানো বাধ্যতামূলক
     
@@ -126,7 +129,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
     }
 
     if (!userId) {
-        return res.status(400).send('❌ ত্রুটি: ইউজার আইডি পাওয়া যায়নি, তাই ডাটাবেজে সংরক্ষণ সম্ভব নয়।');
+        return res.status(400).send('❌ ত্রুটি: ইউজার আইডি পাওয়া যায়নি, তাই ডাটাবেজে সংরক্ষণ সম্ভব নয়।');
     }
 
     try {
@@ -308,9 +311,7 @@ app.post('/api/webhook', async (req, res) => {
     }
 });
 
-// ফ্লাটার অ্যাপ থেকে পোস্ট ডেটা সেভ করার এপিআই
-
-// ফ্লাটার অ্যাপ থেকে পোস্ট এবং ইমেজ ডেটা সেভ করার এপিআই (আপডেটেড)
+// ফ্লাটার অ্যাপ থেকে পোস্ট এবং ইমেজ ডেটা সেভ করার এপিআই
 app.post('/api/save-post', upload.array('images'), async (req, res) => {
     const { user_id, mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
     
@@ -336,13 +337,13 @@ app.post('/api/save-post', upload.array('images'), async (req, res) => {
             content, 
             JSON.stringify(platforms), 
             schedule_time || null, 
-            imagePaths // নিয়ন ডাটাবেজে ইমেজ লিংক অ্যারে হিসেবে সেভ হচ্ছে
+            imagePaths // নিয়ন ডাটাবেজে ইমেজ লিংক অ্যারে হিসেবে সেভ হচ্ছে
         ];
         
         const result = await pool.query(query, values);
         const savedPost = result.rows[0];
 
-        // n8n-এ ডেটা ফরোয়ার্ড করার লজিক (যদি এনভায়রনমেন্ট ভেরিয়েবলে লিংক দেওয়া থাকে)
+        // n8n-এ ডেটা ফরোয়ার্ড করার লজিক (যদি এনভায়রনমেন্ট ভেরিয়েবলে লিংক দেওয়া থাকে)
         if (process.env.N8N_WEBHOOK_URL) {
             try {
                 await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
@@ -362,10 +363,11 @@ app.post('/api/save-post', upload.array('images'), async (req, res) => {
         res.status(500).json({ success: false, message: 'Server error: ' + error.message });
     }
 });
+
 // সার্ভার পোর্ট কনফিগারেশন
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`=================================`);
-  console.log(`সার্ভার সফলভাবে পোর্ট ${PORT}-এ রান হচ্ছে!`);
-  console.log(`=================================`);
+    console.log(`=================================`);
+    console.log(`সার্ভার সফলভাবে পোর্ট ${PORT}-এ রান হচ্ছে!`);
+    console.log(`=================================`);
 });
