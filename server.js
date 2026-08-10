@@ -2,6 +2,9 @@ const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
+const multer = require('multer');
+const upload = multer({ dest: 'uploads/' }); // সাময়িকভাবে ফাইল রাখার জন্য
+
 const axios = require('axios'); // ফেসবুক এপিআই কল করার জন্য এটি দরকার হবে
 
 const app = express();
@@ -306,8 +309,17 @@ app.post('/api/webhook', async (req, res) => {
 });
 
 // ফ্লাটার অ্যাপ থেকে পোস্ট ডেটা সেভ করার এপিআই
-app.post('/api/save-post', async (req, res) => {
-    const { user_id, mode, content, platforms, schedule_time } = req.body;
+
+// ফ্লাটার অ্যাপ থেকে পোস্ট এবং ইমেজ ডেটা সেভ করার এপিআই
+app.post('/api/save-post', upload.array('images'), async (req, res) => {
+    const { user_id, mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
+    
+    // ফ্লাটার থেকে পাঠানো চেক বক্সের মানগুলো অবজেক্টে রূপান্তর করা
+    const platforms = {
+        facebook: facebook === 'true',
+        instagram: instagram === 'true',
+        pinterest: pinterest === 'true'
+    };
 
     try {
         const query = `
@@ -315,7 +327,7 @@ app.post('/api/save-post', async (req, res) => {
             VALUES ($1, $2, $3, $4, $5) 
             RETURNING *;
         `;
-        const values = [user_id, mode, content, JSON.stringify(platforms), schedule_time];
+        const values = [user_id, mode, content, JSON.stringify(platforms), schedule_time || null];
         
         const result = await pool.query(query, values);
 
