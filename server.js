@@ -85,17 +85,34 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট (Facebook Auth Route)
+// ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট (Facebook Auth Route - user_id রিসিভ করবে)
 app.get('/auth/facebook', (req, res) => {
+    const userId = req.query.user_id; // ফ্লাটার অ্যাপ থেকে ইউজার আইডি পাঠানো হবে
     const appId = process.env.FACEBOOK_APP_ID;
     const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
-    const fbLoginUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=pages_show_list,pages_manage_posts,pages_read_engagement`;
+    
+    // state এর ভেতরে user_id পাস করে ফেসবুক অথেন্টিকেশনে পাঠানো হচ্ছে যাতে callback এ এটি ফিরে পাওয়া যায়
+    const state = userId ? JSON.stringify({ user_id: userId }) : '';
+    
+    const fbLoginUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=pages_show_list,pages_manage_posts,pages_read_engagement`;
     res.redirect(fbLoginUrl);
 });
 
-// ৪. ফেসবুক কলব্যাক রাউট (Long-lived Token এবং Neon DB তে সেভ করার লজিক সহ)
+// ৪. ফেসবুক কলব্যাক রাউট (Long-lived Token এবং Neon DB তে user_id সহ সেভ করার লজিক)
 app.get('/auth/facebook/callback', async (req, res) => {
     const code = req.query.code;
+    const stateStr = req.query.state;
+    
+    let userId = null;
+    try {
+        if (stateStr) {
+            const parsedState = JSON.parse(stateStr);
+            userId = parsedState.user_id;
+        }
+    } catch (e) {
+        console.error("State parse error:", e);
+    }
+
     if (!code) {
         return res.status(400).send('Authorization code not found!');
     }
@@ -120,23 +137,21 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const pagesResponse = await axios.get(pagesUrl);
         const pages = pagesResponse.data.data;
 
-        // ঘ. Neon ডাটাবেজে সঠিক ডেটা, platform এবং updated_at আপডেট করার লজিক
+        // ঘ. Neon ডাটাবেজে user_id সহ সঠিক ডেটা, platform এবং updated_at আপডেট বা ইনসার্ট করার লজিক
         for (const page of pages) {
             const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1';
             const existing = await pool.query(checkQuery, [page.id]);
 
             if (existing.rows.length > 0) {
-                const updateQuery = 'UPDATE social_accounts SET access_token = $1, is_active = TRUE, platform = $2, updated_at = NOW() WHERE page_id = $3';
-                await pool.query(updateQuery, [page.access_token, 'facebook', page.id]);
+                const updateQuery = 'UPDATE social_accounts SET user_id = $1, access_token = $2, is_active = TRUE, platform = $3, updated_at = NOW() WHERE page_id = $4';
+                await pool.query(updateQuery, [userId, page.access_token, 'facebook', page.id]);
             } else {
-                const insertQuery = 'INSERT INTO social_accounts (page_id, access_token, is_active, platform) VALUES ($1, $2, $3, $4)';
-                await pool.query(insertQuery, [page.id, page.access_token, true, 'facebook']);
+                const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5)';
+                await pool.query(insertQuery, [userId, page.id, page.access_token, true, 'facebook']);
             }
         }
 
         // সফলতার সুন্দর HTML রেসপন্স
-       // Success HTML response with guidance to close the browser tab
-       // সফলতার সুন্দর HTML রেসপন্স (ব্রাউজারে সাকসেস পেজ দেখানোর জন্য)
         res.send(`
             <html>
                 <head>
@@ -146,11 +161,11 @@ app.get('/auth/facebook/callback', async (req, res) => {
                 <body style="font-family: Arial, sans-serif; text-align: center; padding: 40px 20px; background-color: #f4f7f6;">
                     <div style="background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0px 4px 12px rgba(0,0,0,0.1); max-width: 90%; margin-top: 50px;">
                         <h2 style="color: #28a745; margin-bottom: 10px;">🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2>
-                        <p style="color: #555; font-size: 15px;">টোকেন সফলভাবে Neon Database-এ সেভ করা হয়েছে।</p>
+                        <p style="color: #555; font-size: 15px;">টোকেন সফলভাবে Neon Database-এ ইউজার আইডি সহ সেভ করা হয়েছে।</p>
                         
                         <hr style="border: 0; height: 1px; background: #eee; margin: 20px 0;">
                         
-                        <p style="color: #666; font-size: 14px; margin-bottom: 20px;">দয়া করে এই ব্রাউজার ট্যাবটি কেটে বা ক্লোজ করে আপনার অ্যাপে ফিরে যান।</p>
+                        <p style="color: #666; font-size: 14px; margin-bottom: 20px;">দয়া করে এই ব্রাউজার ট্যাবটি কেটে বা ক্লোজ করে আপনার অ্যাপে ফিরে যান।</p>
                         
                         <button onclick="tryClose()" style="background-color: #0084ff; color: white; border: none; padding: 12px 24px; border-radius: 6px; font-size: 16px; cursor: pointer; font-weight: bold;">
                             ট্যাব বন্ধ করুন
@@ -161,7 +176,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
                         function tryClose() {
                             window.close();
                             setTimeout(() => {
-                                alert("দয়া করে ওপরের ট্যাব বা ক্রস (X) আইকনে ক্লিক করে ব্রাউজার বন্ধ করুন এবং অ্যাপে ফিরে যান।");
+                                alert("দয়া করে ওপরের ট্যাব বা ক্রস (X) আইকনে ক্লিক করে ব্রাউজার বন্ধ করুন এবং অ্যাপে ফিরে যান।");
                             }, 500);
                         }
                     </script>
@@ -280,6 +295,7 @@ app.post('/api/webhook', async (req, res) => {
         res.sendStatus(404);
     }
 });
+
 // ফ্লাটার অ্যাপ থেকে পোস্ট ডেটা সেভ করার এপিআই
 app.post('/api/save-post', async (req, res) => {
     const { user_id, mode, content, platforms, schedule_time } = req.body;
