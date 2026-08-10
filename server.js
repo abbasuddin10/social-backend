@@ -85,14 +85,19 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট (Facebook Auth Route - user_id রিসিভ করবে)
+// ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট (Facebook Auth Route - user_id বাধ্যতামূলক করা হয়েছে)
 app.get('/auth/facebook', (req, res) => {
-    const userId = req.query.user_id; // ফ্লাটার অ্যাপ থেকে ইউজার আইডি পাঠানো হবে
+    const userId = req.query.user_id; // ফ্লাটার অ্যাপ থেকে ইউজার আইডি পাঠানো বাধ্যতামূলক
+    
+    if (!userId) {
+        return res.status(400).send('❌ ত্রুটি: ফেসবুক কানেক্ট করার জন্য user_id পাঠানো বাধ্যতামূলক!');
+    }
+
     const appId = process.env.FACEBOOK_APP_ID;
     const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
     
-    // state এর ভেতরে user_id পাস করে ফেসবুক অথেন্টিকেশনে পাঠানো হচ্ছে যাতে callback এ এটি ফিরে পাওয়া যায়
-    const state = userId ? JSON.stringify({ user_id: userId }) : '';
+    // state এর ভেতরে user_id পাস করে ফেসবুক অথেন্টিকেশনে পাঠানো হচ্ছে যাতে callback এ এটি ফিরে পাওয়া যায়
+    const state = JSON.stringify({ user_id: userId });
     
     const fbLoginUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=pages_show_list,pages_manage_posts,pages_read_engagement`;
     res.redirect(fbLoginUrl);
@@ -115,6 +120,10 @@ app.get('/auth/facebook/callback', async (req, res) => {
 
     if (!code) {
         return res.status(400).send('Authorization code not found!');
+    }
+
+    if (!userId) {
+        return res.status(400).send('❌ ত্রুটি: ইউজার আইডি পাওয়া যায়নি, তাই ডাটাবেজে সংরক্ষণ সম্ভব নয়।');
     }
 
     try {
@@ -161,7 +170,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
                 <body style="font-family: Arial, sans-serif; text-align: center; padding: 40px 20px; background-color: #f4f7f6;">
                     <div style="background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0px 4px 12px rgba(0,0,0,0.1); max-width: 90%; margin-top: 50px;">
                         <h2 style="color: #28a745; margin-bottom: 10px;">🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2>
-                        <p style="color: #555; font-size: 15px;">টোকেন সফলভাবে Neon Database-এ ইউজার আইডি সহ সেভ করা হয়েছে।</p>
+                        <p style="color: #555; font-size: 15px;">টোকেন সফলভাবে Neon Database-এ ইউজার আইডি (${userId}) সহ সেভ করা হয়েছে।</p>
                         
                         <hr style="border: 0; height: 1px; background: #eee; margin: 20px 0;">
                         
