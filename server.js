@@ -280,6 +280,30 @@ app.post('/api/webhook', async (req, res) => {
         res.sendStatus(404);
     }
 });
+// ফ্লাটার অ্যাপ থেকে পোস্ট ডেটা সেভ করার এপিআই
+app.post('/api/save-post', async (req, res) => {
+    const { user_id, mode, content, platforms, schedule_time } = req.body;
+
+    try {
+        const query = `
+            INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time) 
+            VALUES ($1, $2, $3, $4, $5) 
+            RETURNING *;
+        `;
+        const values = [user_id, mode, content, JSON.stringify(platforms), schedule_time];
+        
+        const result = await pool.query(query, values);
+
+        res.status(201).json({
+            success: true,
+            message: 'Post data saved successfully in Neon DB!',
+            post: result.rows[0]
+        });
+    } catch (error) {
+        console.error('Save Post Error:', error.message);
+        res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+    }
+});
 
 // সার্ভার পোর্ট কনফিগারেশন
 const PORT = process.env.PORT || 3000;
