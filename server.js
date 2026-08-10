@@ -310,7 +310,7 @@ app.post('/api/webhook', async (req, res) => {
 
 // ফ্লাটার অ্যাপ থেকে পোস্ট ডেটা সেভ করার এপিআই
 
-// ফ্লাটার অ্যাপ থেকে পোস্ট এবং ইমেজ ডেটা সেভ করার এপিআই
+// ফ্লাটার অ্যাপ থেকে পোস্ট এবং ইমেজ ডেটা সেভ করার এপিআই (আপডেটেড)
 app.post('/api/save-post', upload.array('images'), async (req, res) => {
     const { user_id, mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
     
@@ -321,27 +321,47 @@ app.post('/api/save-post', upload.array('images'), async (req, res) => {
         pinterest: pinterest === 'true'
     };
 
+    // আপলোড করা ফাইলগুলোর পাবলিক ইউআরএল বা লিংক তৈরি করা
+    const imagePaths = req.files ? req.files.map(file => `${req.protocol}://${req.get('host')}/uploads/${file.filename}`) : [];
+
     try {
         const query = `
-            INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time) 
-            VALUES ($1, $2, $3, $4, $5) 
+            INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
+            VALUES ($1, $2, $3, $4, $5, $6) 
             RETURNING *;
         `;
-        const values = [user_id, mode, content, JSON.stringify(platforms), schedule_time || null];
+        const values = [
+            user_id, 
+            mode, 
+            content, 
+            JSON.stringify(platforms), 
+            schedule_time || null, 
+            imagePaths // নিয়ন ডাটাবেজে ইমেজ লিংক অ্যারে হিসেবে সেভ হচ্ছে
+        ];
         
         const result = await pool.query(query, values);
+        const savedPost = result.rows[0];
+
+        // n8n-এ ডেটা ফরোয়ার্ড করার লজিক (যদি এনভায়রনমেন্ট ভেরিয়েবলে লিংক দেওয়া থাকে)
+        if (process.env.N8N_WEBHOOK_URL) {
+            try {
+                await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
+                console.log('Post data with images successfully forwarded to n8n');
+            } catch (n8nError) {
+                console.error('Error forwarding to n8n:', n8nError.message);
+            }
+        }
 
         res.status(201).json({
             success: true,
-            message: 'Post data saved successfully in Neon DB!',
-            post: result.rows[0]
+            message: 'Post and images saved successfully in Neon DB and forwarded to n8n!',
+            post: savedPost
         });
     } catch (error) {
         console.error('Save Post Error:', error.message);
         res.status(500).json({ success: false, message: 'Server error: ' + error.message });
     }
 });
-
 // সার্ভার পোর্ট কনফিগারেশন
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
