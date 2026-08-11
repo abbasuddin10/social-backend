@@ -2,10 +2,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
-const multer = require('multer');
-const upload = multer({ dest: 'uploads/' }); // সাময়িকভাবে ফাইল রাখার জন্য
-
-const axios = require('axios'); // ফেসবুক এপিআই কল করার জন্য এটি দরকার হবে
+const axios = require('axios');
 
 const app = express();
 
@@ -13,18 +10,15 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// 👇 এই লাইনটি এখানে বসানো হয়েছে, যাতে আপলোড করা ছবিগুলো ব্রাউজারে দেখা যায়
-app.use('/uploads', express.static('uploads'));
-
 // রেন্ডার ড্যাশবোর্ডের Environment Variable থেকে স্বয়ংক্রিয়ভাবে Neon ডাটাবেজ কানেকশন নেবে
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
 });
 
-// সার্ভার ঠিকঠাক চলছে কি না তা টেস্ট করার টেস্ট রুট
+// সার্ভার ঠিকঠাক চলছে কি না তা টেস্ট করার রুট
 app.get('/', (req, res) => {
-    res.send('Node.js Backend Server with Neon DB is running!');
+    res.send('Node.js Backend Server with Neon DB & Supabase Integration is running!');
 });
 
 // ১. রেজিস্ট্রেশন এপিআই (Register Endpoint)
@@ -37,7 +31,6 @@ app.post('/api/register', async (req, res) => {
 
     try {
         const hashedPassword = await bcrypt.hash(password, 10);
-
         const query = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
         const values = [email, hashedPassword];
         
@@ -74,7 +67,6 @@ app.post('/api/login', async (req, res) => {
         }
 
         const user = result.rows[0];
-
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(401).json({ success: false, message: 'পাসওয়ার্ড ভুল হয়েছে!' });
@@ -91,25 +83,22 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট (Facebook Auth Route - user_id বাধ্যতামূলক করা হয়েছে)
+// ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট
 app.get('/auth/facebook', (req, res) => {
-    const userId = req.query.user_id; // ফ্লাটার অ্যাপ থেকে ইউজার আইডি পাঠানো বাধ্যতামূলক
-    
+    const userId = req.query.user_id;
     if (!userId) {
         return res.status(400).send('❌ ত্রুটি: ফেসবুক কানেক্ট করার জন্য user_id পাঠানো বাধ্যতামূলক!');
     }
 
     const appId = process.env.FACEBOOK_APP_ID;
     const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
-    
-    // state এর ভেতরে user_id পাস করে ফেসবুক অথেন্টিকেশনে পাঠানো হচ্ছে যাতে callback এ এটি ফিরে পাওয়া যায়
     const state = JSON.stringify({ user_id: userId });
     
     const fbLoginUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=pages_show_list,pages_manage_posts,pages_read_engagement`;
     res.redirect(fbLoginUrl);
 });
 
-// ৪. ফেসবুক কলব্যাক রাউট (Long-lived Token এবং Neon DB তে user_id সহ সেভ করার লজিক)
+// ৪. ফেসবুক কলব্যাক রাউট
 app.get('/auth/facebook/callback', async (req, res) => {
     const code = req.query.code;
     const stateStr = req.query.state;
@@ -124,12 +113,8 @@ app.get('/auth/facebook/callback', async (req, res) => {
         console.error("State parse error:", e);
     }
 
-    if (!code) {
-        return res.status(400).send('Authorization code not found!');
-    }
-
-    if (!userId) {
-        return res.status(400).send('❌ ত্রুটি: ইউজার আইডি পাওয়া যায়নি, তাই ডাটাবেজে সংরক্ষণ সম্ভব নয়।');
+    if (!code || !userId) {
+        return res.status(400).send('❌ ত্রুটি: অথোরাইজেশন কোড বা ইউজার আইডি পাওয়া যায়নি!');
     }
 
     try {
@@ -137,22 +122,18 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const appSecret = process.env.FACEBOOK_APP_SECRET;
         const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
 
-        // ক. শর্ট-লাইভ অ্যাক্সেস টোকেন পাওয়ার জন্য গ্রাফ এপিআই কল
         const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
         const tokenResponse = await axios.get(tokenUrl);
         const shortLivedToken = tokenResponse.data.access_token;
 
-        // খ. শর্ট-লাইভ টোকেনকে লং-লাইভ টোকেনে (৬০ দিন মেয়াদী) কনভার্ট করা
         const longLivedUrl = `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken}`;
         const longLivedResponse = await axios.get(longLivedUrl);
         const longLivedAccessToken = longLivedResponse.data.access_token;
 
-        // গ. লং-লাইভ টোকেন ব্যবহার করে পেজগুলোর লিস্ট ফেচ করা
         const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${longLivedAccessToken}`;
         const pagesResponse = await axios.get(pagesUrl);
         const pages = pagesResponse.data.data;
 
-        // ঘ. Neon ডাটাবেজে user_id সহ সঠিক ডেটা, platform এবং updated_at আপডেট বা ইনসার্ট করার লজিক
         for (const page of pages) {
             const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1';
             const existing = await pool.query(checkQuery, [page.id]);
@@ -166,35 +147,11 @@ app.get('/auth/facebook/callback', async (req, res) => {
             }
         }
 
-        // সফলতার সুন্দর HTML রেসপন্স
         res.send(`
             <html>
-                <head>
-                    <title>Facebook Connected</title>
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                </head>
-                <body style="font-family: Arial, sans-serif; text-align: center; padding: 40px 20px; background-color: #f4f7f6;">
-                    <div style="background: white; padding: 30px; border-radius: 12px; display: inline-block; box-shadow: 0px 4px 12px rgba(0,0,0,0.1); max-width: 90%; margin-top: 50px;">
-                        <h2 style="color: #28a745; margin-bottom: 10px;">🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2>
-                        <p style="color: #555; font-size: 15px;">টোকেন সফলভাবে Neon Database-এ ইউজার আইডি (${userId}) সহ সেভ করা হয়েছে।</p>
-                        
-                        <hr style="border: 0; height: 1px; background: #eee; margin: 20px 0;">
-                        
-                        <p style="color: #666; font-size: 14px; margin-bottom: 20px;">দয়া করে এই ব্রাউজার ট্যাবটি কেটে বা ক্লোজ করে আপনার অ্যাপে ফিরে যান।</p>
-                        
-                        <button onclick="tryClose()" style="background-color: #0084ff; color: white; border: none; padding: 12px 24px; border-radius: 6px; font-size: 16px; cursor: pointer; font-weight: bold;">
-                            ট্যাব বন্ধ করুন
-                        </button>
-                    </div>
-
-                    <script>
-                        function tryClose() {
-                            window.close();
-                            setTimeout(() => {
-                                alert("দয়া করে ওপরের ট্যাব বা ক্রস (X) আইকনে ক্লিক করে ব্রাউজার বন্ধ করুন এবং অ্যাপে ফিরে যান।");
-                            }, 500);
-                        }
-                    </script>
+                <body style="font-family: Arial, text-align: center; padding: 50px;">
+                    <h2 style="color: #28a745;">🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2>
+                    <p>টোকেন সফলভাবে Neon Database-এ সেভ করা হয়েছে। আপনি এই ট্যাব বন্ধ করে অ্যাপে ফিরে যেতে পারেন।</p>
                 </body>
             </html>
         `);
@@ -204,126 +161,19 @@ app.get('/auth/facebook/callback', async (req, res) => {
     }
 });
 
-// ফেসবুক পেজে পোস্ট করার এপিআই
-app.post('/api/post-to-facebook', async (req, res) => {
-    const { page_id, message } = req.body;
-    try {
-        const result = await pool.query('SELECT access_token FROM social_accounts WHERE page_id = $1', [page_id]);
-        if (result.rows.length === 0) return res.status(404).send('Page not found!');
-        
-        const token = result.rows[0].access_token;
-        const postUrl = `https://graph.facebook.com/v18.0/${page_id}/feed`;
-        const response = await axios.post(postUrl, {
-            message: message,
-            access_token: token
-        });
-
-        res.json({ success: true, postId: response.data.id });
-    } catch (error) {
-        console.error("Post Error:", error.response?.data || error.message);
-        res.status(500).json({ error: error.response?.data || error.message });
-    }
-});
-
-app.post('/api/reply-to-comment', async (req, res) => {
-    const { page_id, comment_id, reply_message } = req.body;
-    try {
-        const result = await pool.query('SELECT access_token FROM social_accounts WHERE page_id = $1', [page_id]);
-        if (result.rows.length === 0) return res.status(404).send('Page not found!');
-        
-        const token = result.rows[0].access_token;
-        const replyUrl = `https://graph.facebook.com/v18.0/${comment_id}/comments`;
-        await axios.post(replyUrl, {
-            message: reply_message,
-            access_token: token
-        });
-
-        res.json({ success: true, message: "Reply posted successfully!" });
-    } catch (error) {
-        console.error("Reply Error:", error.response?.data || error.message);
-        res.status(500).json({ error: error.message });
-    }
-});  
-
-// ফেসবুক ইনবক্স মেসেজে রিপ্লাই পাঠানোর এপিআই
-app.post('/api/reply-to-message', async (req, res) => {
-    const { page_id, recipient_id, message } = req.body;
-    try {
-        const result = await pool.query('SELECT access_token FROM social_accounts WHERE page_id = $1', [page_id]);
-        if (result.rows.length === 0) return res.status(404).send('Page not found!');
-        
-        const token = result.rows[0].access_token;
-
-        const messageUrl = `https://graph.facebook.com/v18.0/me/messages?access_token=${token}`;
-        const response = await axios.post(messageUrl, {
-            recipient: { id: recipient_id },
-            message: { text: message }
-        });
-
-        res.json({ success: true, messageId: response.data.message_id });
-    } catch (error) {
-        console.error("Message Reply Error:", error.response?.data || error.message);
-        res.status(500).json({ error: error.response?.data || error.message });
-    }
-});
-
-// ৫. ফেসবুক ওয়েবুক ভেরিফিকেশন (GET Route)
-app.get('/api/webhook', (req, res) => {
-    const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN || 'my_secure_verify_token';
-
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-
-    if (mode && token) {
-        if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-            console.log('WEBHOOK_VERIFIED');
-            res.status(200).send(challenge);
-        } else {
-            res.sendStatus(403);
-        }
-    } else {
-        res.sendStatus(400);
-    }
-});
-
-// ৬. ফেসবুক ওয়েবুক ডেটা রিসিভ এবং n8n-এ ফরোয়ার্ড করার জন্য (POST Route)
-app.post('/api/webhook', async (req, res) => {
-    const body = req.body;
-
-    if (body.object === 'page') {
-        try {
-            for (const entry of body.entry) {
-                if (process.env.N8N_WEBHOOK_URL) {
-                    await axios.post(process.env.N8N_WEBHOOK_URL, body);
-                    console.log('Webhook data successfully forwarded to n8n');
-                } else {
-                    console.error('N8N_WEBHOOK_URL is not defined in environment variables!');
-                }
-            }
-        } catch (error) {
-            console.error('Error forwarding to n8n:', error.message);
-        }
-
-        res.status(200).send('EVENT_RECEIVED');
-    } else {
-        res.sendStatus(404);
-    }
-});
-
-// ফ্লাটার অ্যাপ থেকে পোস্ট এবং ইমেজ ডেটা সেভ করার এপিআই
-app.post('/api/save-post', upload.array('images'), async (req, res) => {
-    const { user_id, mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
+// ৫. ফ্লাটার অ্যাপ থেকে পোস্ট এবং Supabase ইমেজ লিংক সেভ করার আপডেট করা এপিআই
+app.post('/api/save-post', async (req, res) => {
+    const { user_id, mode, content, facebook, instagram, pinterest, schedule_time, images } = req.body;
     
-    // ফ্লাটার থেকে পাঠানো চেক বক্সের মানগুলো অবজেক্টে রূপান্তর করা
+    // প্ল্যাটফর্ম সিলেকশন বুলিয়ান ফরম্যাটে রূপান্তর
     const platforms = {
-        facebook: facebook === 'true',
-        instagram: instagram === 'true',
-        pinterest: pinterest === 'true'
+        facebook: facebook === true || facebook === 'true',
+        instagram: instagram === 'true' || instagram === true,
+        pinterest: pinterest === 'true' || pinterest === true
     };
 
-    // আপলোড করা ফাইলগুলোর পাবলিক ইউআরএল বা লিংক তৈরি করা
-    const imagePaths = req.files ? req.files.map(file => `${req.protocol}://${req.get('host')}/uploads/${file.filename}`) : [];
+    // Supabase থেকে আসা পাবলিক ইমেজ লিংকের অ্যারে
+    const imageLinks = images || [];
 
     try {
         const query = `
@@ -337,17 +187,17 @@ app.post('/api/save-post', upload.array('images'), async (req, res) => {
             content, 
             JSON.stringify(platforms), 
             schedule_time || null, 
-            imagePaths // নিয়ন ডাটাবেজে ইমেজ লিংক অ্যারে হিসেবে সেভ হচ্ছে
+            imageLinks // নিয়ন ডাটাবেজে Supabase-এর লিংকগুলো অ্যারে হিসেবে সেভ হচ্ছে
         ];
         
         const result = await pool.query(query, values);
         const savedPost = result.rows[0];
 
-        // n8n-এ ডেটা ফরোয়ার্ড করার লজিক (যদি এনভায়রনমেন্ট ভেরিয়েবলে লিংক দেওয়া থাকে)
+        // n8n-এ ডেটা ফরোয়ার্ড করার লজিক
         if (process.env.N8N_WEBHOOK_URL) {
             try {
                 await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
-                console.log('Post data with images successfully forwarded to n8n');
+                console.log('Post data with Supabase image links successfully forwarded to n8n');
             } catch (n8nError) {
                 console.error('Error forwarding to n8n:', n8nError.message);
             }
@@ -355,7 +205,7 @@ app.post('/api/save-post', upload.array('images'), async (req, res) => {
 
         res.status(201).json({
             success: true,
-            message: 'Post and images saved successfully in Neon DB and forwarded to n8n!',
+            message: 'Post and Supabase image links saved successfully in Neon DB and forwarded to n8n!',
             post: savedPost
         });
     } catch (error) {
