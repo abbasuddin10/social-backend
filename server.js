@@ -226,43 +226,42 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
 
     const imagePaths = [];
 
-    // 📤 ফাইল আপলোড লজিক (Supabase Storage: বাকেটের নাম বড় হাতের অক্ষরে 'POST-IMAGES' করা হয়েছে)
     if (req.files && req.files.length > 0) {
         for (const file of req.files) {
             try {
                 if (supabase) {
                     const fileStream = fs.readFileSync(file.path);
-                    const fileExtension = file.originalname.split('.').pop() || 'jpg';
-                    const fileName = `${userId}_${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExtension}`;
+                    
+                    // ফাইল নাম সেফ রাখা
+                    const uniqueSuffix = Date.now() + '-' + Math.floor(Math.random() * 1E9);
+                    const fileName = `user-${userId}-${uniqueSuffix}.jpg`;
 
-                    // Supabase-এর 'POST-IMAGES' বাকেটে ফাইল আপলোড
+                    // ⚠️ বাকেটের নাম সহজে 'postimages' করা হলো
                     const { data, error } = await supabase.storage
-                        .from('POST-IMAGES') 
+                        .from('postimages') 
                         .upload(fileName, fileStream, {
                             contentType: file.mimetype,
                             upsert: true
                         });
 
                     if (error) {
-                        console.error('Supabase Upload Error:', error.message);
-                        // ফাইল আপলোড ফেইল করলে ব্যাকআপ হিসেবে ব্যাকএন্ড লিংক ব্যবহার হবে
+                        console.error('Supabase Specific Upload Error:', error.message, error);
                         imagePaths.push(`https://${req.get('host')}/uploads/${file.filename}`);
                     } else {
-                        // Supabase-এর Public HTTPS লিঙ্ক জেনারেট করা
                         const { data: publicUrlData } = supabase.storage
-                            .from('POST-IMAGES')
+                            .from('postimages')
                             .getPublicUrl(fileName);
 
                         imagePaths.push(publicUrlData.publicUrl);
                     }
                 } else {
-                    // Supabase সেটআপ না থাকলে আগের মতো রেন্ডার লিংক
+                    console.log('Supabase client is not initialized.');
                     imagePaths.push(`https://${req.get('host')}/uploads/${file.filename}`);
                 }
             } catch (uploadErr) {
                 console.error('File Upload Loop Error:', uploadErr.message);
+                imagePaths.push(`https://${req.get('host')}/uploads/${file.filename}`);
             } finally {
-                // রেন্ডারের অস্থায়ী স্টোরেজ ক্লিন রাখতে আপলোড শেষে ফাইল ডিলিট করা
                 try {
                     if (fs.existsSync(file.path)) {
                         fs.unlinkSync(file.path);
@@ -292,7 +291,6 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
         const result = await pool.query(query, values);
         const savedPost = result.rows[0];
 
-        // n8n-এ ফরওয়ার্ড করা
         if (process.env.N8N_WEBHOOK_URL) {
             try {
                 await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
@@ -303,7 +301,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
 
         res.status(201).json({
             success: true,
-            message: 'Post saved securely in Neon DB and images uploaded to Supabase!',
+            message: 'Post processing completed!',
             post: savedPost
         });
     } catch (error) {
