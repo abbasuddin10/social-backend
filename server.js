@@ -259,6 +259,56 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
         res.status(500).json({ success: false, message: 'Server error: ' + error.message });
     }
 });
+// ==========================================
+// 🔄 ১. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক করার এপিআই
+// ==========================================
+app.get('/user/accounts', async (req, res) => {
+    const userId = req.query.user_id;
+
+    if (!userId) {
+        return res.status(400).json({ success: false, message: 'user_id আবশ্যক!' });
+    }
+
+    try {
+        // ডাটাবেজ থেকে ওই ইউজারের শুধু একটিভ (is_active = true) প্ল্যাটফর্মগুলোর লিস্ট নিন
+        const query = 'SELECT platform FROM social_accounts WHERE user_id = $1 AND is_active = true';
+        const result = await pool.query(query, [userId]);
+        
+        // শুধু প্ল্যাটফর্মের নামগুলোর একটি অ্যারে তৈরি করুন (যেমন: ['facebook'])
+        const platforms = result.rows.map(row => row.platform.toLowerCase().trim());
+        
+        // ফ্ল্যাটার অ্যাপের রিকোয়েস্ট অনুযায়ী সরাসরি অ্যারে রিটার্ন করুন
+        res.status(200).json(platforms);
+    } catch (err) {
+        console.error('Fetch Accounts Error:', err);
+        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
+    }
+});
+
+// ==========================================
+// ❌ ২. সোশ্যাল অ্যাকাউন্ট ডিসকানেক্ট করার এপিআই
+// ==========================================
+app.post('/auth/disconnect', async (req, res) => {
+    const { user_id, platform } = req.body;
+
+    if (!user_id || !platform) {
+        return res.status(400).json({ success: false, message: 'user_id এবং platform আবশ্যক!' });
+    }
+
+    try {
+        // ডাটাবেজ থেকে ডাটা একেবারে ডিলিট না করে নিরাপদ উপায়ে is_active = false করে দেওয়া হচ্ছে
+        const query = 'UPDATE social_accounts SET is_active = false, access_token = null, updated_at = NOW() WHERE user_id = $1 AND platform = $2';
+        await pool.query(query, [user_id, platform.toLowerCase().trim()]);
+
+        res.status(200).json({ 
+            success: true, 
+            message: `${platform} সফলভাবে ডিসকানেক্ট করা হয়েছে।` 
+        });
+    } catch (err) {
+        console.error('Disconnect Error:', err);
+        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
+    }
+});
 
 // ফেসবুক ওয়েবুক রুটসমূহ (GET/POST /api/webhook) অপরিবর্তিত থাকবে...
 app.get('/api/webhook', (req, res) => { /* ... */ });
