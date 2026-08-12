@@ -5,7 +5,9 @@ const cors = require('cors');
 const multer = require('multer');
 const upload = multer({ dest: 'uploads/' });
 const axios = require('axios');
-const jwt = require('jsonwebtoken'); // 👈 JWT যুক্ত করা হলো
+const jwt = require('jsonwebtoken');
+const fs = require('fs'); // 👈 ফাইল রিড ও লোকাল ফাইল ডিলিট করার জন্য
+const { createClient } = require('@supabase/supabase-js'); // 👈 Supabase Client
 
 const app = express();
 
@@ -13,28 +15,33 @@ app.use(express.json());
 app.use(cors());
 app.use('/uploads', express.static('uploads'));
 
+// 🚀 Supabase Client সেটআপ
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase = (SUPABASE_URL && SUPABASE_KEY) ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
 });
 
-// JWT Secret Key (Render-এর Environment Variable-এ রাখা উচিত)
+// JWT Secret Key
 const JWT_SECRET = process.env.JWT_SECRET || 'your_super_secure_secret_key_123';
 
-// 🛡️ মিডলওয়্যার: টোকেন ভেরিফাই করে রিকোয়েস্টে user_id পুশ করার জন্য
+// 🛡️ মিডলওয়্যার: টোকেন ভেরিফাই করে রিকোয়েস্টে user_id পুশ করার জন্য
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN_HERE
+    const token = authHeader && authHeader.split(' ')[1];
 
     if (!token) {
-        return res.status(401).json({ success: false, message: 'অথেন্টিকেশন টোকেন পাওয়া যায়নি!' });
+        return res.status(401).json({ success: false, message: 'অথেন্টিকেশন টোকেন পাওয়া যায়নি!' });
     }
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) {
-            return res.status(403).json({ success: false, message: 'ইনভ্যালিড বা এক্সপায়ার্ড টোকেন!' });
+            return res.status(403).json({ success: false, message: 'ইনভ্যালিড বা এক্সপায়ার্ড টোকেন!' });
         }
-        req.user = user; // টোকেন থেকে পাওয়া ইউজার অবজেক্ট (id) রিকোয়েস্টে সেট হবে
+        req.user = user;
         next();
     });
 };
@@ -43,7 +50,7 @@ app.get('/', (req, res) => {
     res.send('Node.js Backend Server with Neon DB is running!');
 });
 
-// ১. রেজিস্ট্রেশন এপিআই (JWT Token সহ আপডেট করা)
+// ১. রেজিস্ট্রেশন এপিআই
 app.post('/api/register', async (req, res) => {
     const { email, password } = req.body;
 
@@ -58,14 +65,12 @@ app.post('/api/register', async (req, res) => {
         const result = await pool.query(query, values);
         
         const user = result.rows[0];
-        
-        // টোকেন জেনারেট করা (১ বছরের জন্য বা প্রজেক্ট অনুযায়ী সেট করতে পারেন)
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
 
         res.status(201).json({
             success: true,
-            message: 'অ্যাকাউন্ট সফলভাবে তৈরি হয়েছে!',
-            token: token, // ফ্লাটার অ্যাপ এই টোকেন সেভ করবে
+            message: 'অ্যাকাউন্ট সফলভাবে তৈরি হয়েছে!',
+            token: token,
             user: { id: user.id, email: user.email }
         });
     } catch (err) {
@@ -77,7 +82,7 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-// ২. লগইন এপিআই (JWT Token সহ আপডেট করা)
+// ২. লগইন এপিআই
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
 
@@ -99,13 +104,12 @@ app.post('/api/login', async (req, res) => {
             return res.status(401).json({ success: false, message: 'পাসওয়ার্ড ভুল হয়েছে!' });
         }
 
-        // টোকেন জেনারেট করা
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
 
         res.status(200).json({
             success: true,
             message: 'সফলভাবে লগইন হয়েছে!',
-            token: token, // ফ্লাটার অ্যাপ এই টোকেন সেভ করবে
+            token: token,
             user: { id: user.id, email: user.email }
         });
     } catch (err) {
@@ -114,9 +118,9 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট (টোকেন দিয়ে রিকোয়েস্ট সিকিউর করা হয়েছে)
+// ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট
 app.get('/auth/facebook', (req, res) => {
-    const userId = req.query.user_id; // এটি অথেনটিকেটেড ইউজার আইডি হিসেবে ফ্লাটার থেকে আসবে
+    const userId = req.query.user_id;
     
     if (!userId) {
         return res.status(400).send('❌ ত্রুটি: ফেসবুক কানেক্ট করার জন্য user_id পাঠানো বাধ্যতামূলক!');
@@ -130,7 +134,7 @@ app.get('/auth/facebook', (req, res) => {
     res.redirect(fbLoginUrl);
 });
 
-// ৪. ফেসবুক কলব্যাক রাউট (অপরিবর্তিত, কারণ এটি রিডাইরেক্ট স্টেট থেকে আইডি পায়)
+// ৪. ফেসবুক কলব্যাক রাউট
 app.get('/auth/facebook/callback', async (req, res) => {
     const code = req.query.code;
     const stateStr = req.query.state;
@@ -146,7 +150,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
     }
 
     if (!code || !userId) {
-        return res.status(400).send('❌ ত্রুটি: অথেন্টিকেশন কোড বা ইউজার আইডি পাওয়া যায়নি।');
+        return res.status(400).send('❌ ত্রুটি: অথেন্টিকেশন কোড বা ইউজার আইডি পাওয়া যায়নি।');
     }
 
     try {
@@ -167,7 +171,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const pages = pagesResponse.data.data;
 
         for (const page of pages) {
-            const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2'; // 👈 মাল্টি-ইউজার সেফ ফিল্টার
+            const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2';
             const existing = await pool.query(checkQuery, [page.id, userId]);
 
             if (existing.rows.length > 0) {
@@ -186,13 +190,12 @@ app.get('/auth/facebook/callback', async (req, res) => {
     }
 });
 
-// ৫. ফেসবুক পেজে পোস্ট করার এপিআই (authenticateToken মিডলওয়্যার এবং মাল্টি-ইউজার কুয়েরি লক সহ)
+// ৫. ফেসবুক পেজে পোস্ট করার এপিআই
 app.post('/api/post-to-facebook', authenticateToken, async (req, res) => {
     const { page_id, message } = req.body;
-    const userId = req.user.id; // 👈 টোকেন থেকে স্বয়ংক্রিয়ভাবে আইডি চলে এসেছে
+    const userId = req.user.id;
 
     try {
-        // কুয়েরিতে page_id এর সাথে ইউজার আইডিও বাধ্যতামূলক চেক করা হচ্ছে
         const result = await pool.query('SELECT access_token FROM social_accounts WHERE page_id = $1 AND user_id = $2', [page_id, userId]);
         if (result.rows.length === 0) return res.status(404).send('Page not found or unauthorized!');
         
@@ -210,9 +213,9 @@ app.post('/api/post-to-facebook', authenticateToken, async (req, res) => {
     }
 });
 
-// ৬. ফ্লাটার অ্যাপ থেকে পোস্ট ডেটা সেভ করার এপিআই (authenticateToken মিডলওয়্যার সহ সম্পূর্ণ সুরক্ষিত)
+// 🚀 ৬. ফ্লাটার অ্যাপ থেকে পোস্ট ডেটা সেভ করার এপিআই (SUPABASE STORAGE INTEGRATED)
 app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
-    const userId = req.user.id; // 👈 এখন আর বডি থেকে আইডি নেওয়ার সুযোগ নেই, টোকেন থেকে আসবে
+    const userId = req.user.id;
     const { mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
     
     const platforms = {
@@ -221,7 +224,55 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
         pinterest: pinterest === 'true'
     };
 
-    const imagePaths = req.files ? req.files.map(file => `${req.protocol}://${req.get('host')}/uploads/${file.filename}`) : [];
+    const imagePaths = [];
+
+    // 📤 ফাইল আপলোড লজিক (Supabase Storage: বাকেটের নাম বড় হাতের অক্ষরে 'POST-IMAGES' করা হয়েছে)
+    if (req.files && req.files.length > 0) {
+        for (const file of req.files) {
+            try {
+                if (supabase) {
+                    const fileStream = fs.readFileSync(file.path);
+                    const fileExtension = file.originalname.split('.').pop() || 'jpg';
+                    const fileName = `${userId}_${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExtension}`;
+
+                    // Supabase-এর 'POST-IMAGES' বাকেটে ফাইল আপলোড
+                    const { data, error } = await supabase.storage
+                        .from('POST-IMAGES') 
+                        .upload(fileName, fileStream, {
+                            contentType: file.mimetype,
+                            upsert: true
+                        });
+
+                    if (error) {
+                        console.error('Supabase Upload Error:', error.message);
+                        // ফাইল আপলোড ফেইল করলে ব্যাকআপ হিসেবে ব্যাকএন্ড লিংক ব্যবহার হবে
+                        imagePaths.push(`https://${req.get('host')}/uploads/${file.filename}`);
+                    } else {
+                        // Supabase-এর Public HTTPS লিঙ্ক জেনারেট করা
+                        const { data: publicUrlData } = supabase.storage
+                            .from('POST-IMAGES')
+                            .getPublicUrl(fileName);
+
+                        imagePaths.push(publicUrlData.publicUrl);
+                    }
+                } else {
+                    // Supabase সেটআপ না থাকলে আগের মতো রেন্ডার লিংক
+                    imagePaths.push(`https://${req.get('host')}/uploads/${file.filename}`);
+                }
+            } catch (uploadErr) {
+                console.error('File Upload Loop Error:', uploadErr.message);
+            } finally {
+                // রেন্ডারের অস্থায়ী স্টোরেজ ক্লিন রাখতে আপলোড শেষে ফাইল ডিলিট করা
+                try {
+                    if (fs.existsSync(file.path)) {
+                        fs.unlinkSync(file.path);
+                    }
+                } catch (unlinkErr) {
+                    console.error('File Unlink Error:', unlinkErr.message);
+                }
+            }
+        }
+    }
 
     try {
         const query = `
@@ -230,7 +281,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
             RETURNING *;
         `;
         const values = [
-            userId, // সুরক্ষিত আইডি
+            userId,
             mode, 
             content, 
             JSON.stringify(platforms), 
@@ -241,6 +292,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
         const result = await pool.query(query, values);
         const savedPost = result.rows[0];
 
+        // n8n-এ ফরওয়ার্ড করা
         if (process.env.N8N_WEBHOOK_URL) {
             try {
                 await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
@@ -251,7 +303,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
 
         res.status(201).json({
             success: true,
-            message: 'Post saved securely in Neon DB and forwarded to n8n!',
+            message: 'Post saved securely in Neon DB and images uploaded to Supabase!',
             post: savedPost
         });
     } catch (error) {
@@ -259,9 +311,8 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
         res.status(500).json({ success: false, message: 'Server error: ' + error.message });
     }
 });
-// ==========================================
-// 🔄 ১. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক করার এপিআই
-// ==========================================
+
+// ৭. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক করার এপিআই
 app.get('/user/accounts', async (req, res) => {
     const userId = req.query.user_id;
 
@@ -270,14 +321,10 @@ app.get('/user/accounts', async (req, res) => {
     }
 
     try {
-        // ডাটাবেজ থেকে ওই ইউজারের শুধু একটিভ (is_active = true) প্ল্যাটফর্মগুলোর লিস্ট নিন
         const query = 'SELECT platform FROM social_accounts WHERE user_id = $1 AND is_active = true';
         const result = await pool.query(query, [userId]);
         
-        // শুধু প্ল্যাটফর্মের নামগুলোর একটি অ্যারে তৈরি করুন (যেমন: ['facebook'])
         const platforms = result.rows.map(row => row.platform.toLowerCase().trim());
-        
-        // ফ্ল্যাটার অ্যাপের রিকোয়েস্ট অনুযায়ী সরাসরি অ্যারে রিটার্ন করুন
         res.status(200).json(platforms);
     } catch (err) {
         console.error('Fetch Accounts Error:', err);
@@ -285,9 +332,7 @@ app.get('/user/accounts', async (req, res) => {
     }
 });
 
-// ==========================================
-// ❌ ২. সোশ্যাল অ্যাকাউন্ট ডিসকানেক্ট করার এপিআই
-// ==========================================
+// ৮. সোশ্যাল অ্যাকাউন্ট ডিসকানেক্ট করার এপিআই
 app.post('/auth/disconnect', async (req, res) => {
     const { user_id, platform } = req.body;
 
@@ -296,23 +341,18 @@ app.post('/auth/disconnect', async (req, res) => {
     }
 
     try {
-        // ডাটাবেজ থেকে ডাটা একেবারে ডিলিট না করে নিরাপদ উপায়ে is_active = false করে দেওয়া হচ্ছে
         const query = 'UPDATE social_accounts SET is_active = false, access_token = null, updated_at = NOW() WHERE user_id = $1 AND platform = $2';
         await pool.query(query, [user_id, platform.toLowerCase().trim()]);
 
         res.status(200).json({ 
             success: true, 
-            message: `${platform} সফলভাবে ডিসকানেক্ট করা হয়েছে।` 
+            message: `${platform} সফলভাবে ডিসকানেক্ট করা হয়েছে।` 
         });
     } catch (err) {
         console.error('Disconnect Error:', err);
         res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
     }
 });
-
-// ফেসবুক ওয়েবুক রুটসমূহ (GET/POST /api/webhook) অপরিবর্তিত থাকবে...
-app.get('/api/webhook', (req, res) => { /* ... */ });
-app.post('/api/webhook', async (req, res) => { /* ... */ });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
