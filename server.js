@@ -6,8 +6,8 @@ const multer = require('multer');
 const upload = multer({ dest: 'uploads/' });
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
-const fs = require('fs'); // 👈 ফাইল রিড ও লোকাল ফাইল ডিলিট করার জন্য
-const { createClient } = require('@supabase/supabase-js'); // 👈 Supabase Client
+const fs = require('fs');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 
@@ -28,7 +28,7 @@ const pool = new Pool({
 // JWT Secret Key
 const JWT_SECRET = process.env.JWT_SECRET || 'your_super_secure_secret_key_123';
 
-// 🛡️ মিডলওয়্যার: টোকেন ভেরিফাই করে রিকোয়েস্টে user_id পুশ করার জন্য
+// 🛡️ মিডলওয়্যার: টোকেন ভেরিফাই করা
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -118,10 +118,9 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// ৩. ফেসবুক লগইন রিডাইরেক্ট রাউট
+// ৩. ফেসবুক লগইন রিডাইরেক্ট
 app.get('/auth/facebook', (req, res) => {
     const userId = req.query.user_id;
-    
     if (!userId) {
         return res.status(400).send('❌ ত্রুটি: ফেসবুক কানেক্ট করার জন্য user_id পাঠানো বাধ্যতামূলক!');
     }
@@ -134,7 +133,7 @@ app.get('/auth/facebook', (req, res) => {
     res.redirect(fbLoginUrl);
 });
 
-// ৪. ফেসবুক কলব্যাক রাউট
+// ৪. ফেসবুক কলব্যাক
 app.get('/auth/facebook/callback', async (req, res) => {
     const code = req.query.code;
     const stateStr = req.query.state;
@@ -190,30 +189,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
     }
 });
 
-// ৫. ফেসবুক পেজে পোস্ট করার এপিআই
-app.post('/api/post-to-facebook', authenticateToken, async (req, res) => {
-    const { page_id, message } = req.body;
-    const userId = req.user.id;
-
-    try {
-        const result = await pool.query('SELECT access_token FROM social_accounts WHERE page_id = $1 AND user_id = $2', [page_id, userId]);
-        if (result.rows.length === 0) return res.status(404).send('Page not found or unauthorized!');
-        
-        const token = result.rows[0].access_token;
-        const postUrl = `https://graph.facebook.com/v18.0/${page_id}/feed`;
-        const response = await axios.post(postUrl, {
-            message: message,
-            access_token: token
-        });
-
-        res.json({ success: true, postId: response.data.id });
-    } catch (error) {
-        console.error("Post Error:", error.response?.data || error.message);
-        res.status(500).json({ error: error.response?.data || error.message });
-    }
-});
-
-// 🚀 ৬. ফ্লাটার অ্যাপ থেকে পোস্ট ডেটা সেভ করার এপিআই (SUPABASE STORAGE INTEGRATED)
+// 🚀 ৫. পোস্ট ডেটা সেভ করার আপডেট এপিআই (SCHEDULE MULTI-IMAGE CONSECUTIVE DAYS SUPPORT)
 app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
     const userId = req.user.id;
     const { mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
@@ -224,96 +200,154 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
         pinterest: pinterest === 'true'
     };
 
-    const imagePaths = [];
+    const files = req.files || [];
 
-    if (req.files && req.files.length > 0) {
-        for (const file of req.files) {
-            try {
-                if (supabase) {
-                    const fileStream = fs.readFileSync(file.path);
-                    
-                    // ফাইল নাম সেফ রাখা
-                    const uniqueSuffix = Date.now() + '-' + Math.floor(Math.random() * 1E9);
-                    const fileName = `user-${userId}-${uniqueSuffix}.jpg`;
+    // Helper: Supabase/Local Upload Logic
+    const uploadSingleFile = async (file) => {
+        try {
+            if (supabase) {
+                const fileStream = fs.readFileSync(file.path);
+                const uniqueSuffix = Date.now() + '-' + Math.floor(Math.random() * 1E9);
+                const fileName = `user-${userId}-${uniqueSuffix}.jpg`;
 
-                    // ⚠️ বাকেটের নাম সহজে 'postimages' করা হলো
-                    const { data, error } = await supabase.storage
-                        .from('postimages') 
-                        .upload(fileName, fileStream, {
-                            contentType: file.mimetype,
-                            upsert: true
-                        });
+                const { data, error } = await supabase.storage
+                    .from('postimages')
+                    .upload(fileName, fileStream, {
+                        contentType: file.mimetype,
+                        upsert: true
+                    });
 
-                    if (error) {
-                        console.error('Supabase Specific Upload Error:', error.message, error);
-                        imagePaths.push(`https://${req.get('host')}/uploads/${file.filename}`);
-                    } else {
-                        const { data: publicUrlData } = supabase.storage
-                            .from('postimages')
-                            .getPublicUrl(fileName);
-
-                        imagePaths.push(publicUrlData.publicUrl);
-                    }
+                if (error) {
+                    console.error('Supabase Upload Error:', error.message);
+                    return `https://${req.get('host')}/uploads/${file.filename}`;
                 } else {
-                    console.log('Supabase client is not initialized.');
-                    imagePaths.push(`https://${req.get('host')}/uploads/${file.filename}`);
+                    const { data: publicUrlData } = supabase.storage
+                        .from('postimages')
+                        .getPublicUrl(fileName);
+                    return publicUrlData.publicUrl;
                 }
-            } catch (uploadErr) {
-                console.error('File Upload Loop Error:', uploadErr.message);
-                imagePaths.push(`https://${req.get('host')}/uploads/${file.filename}`);
-            } finally {
-                try {
-                    if (fs.existsSync(file.path)) {
-                        fs.unlinkSync(file.path);
-                    }
-                } catch (unlinkErr) {
-                    console.error('File Unlink Error:', unlinkErr.message);
+            } else {
+                return `https://${req.get('host')}/uploads/${file.filename}`;
+            }
+        } catch (uploadErr) {
+            console.error('File Upload Error:', uploadErr.message);
+            return `https://${req.get('host')}/uploads/${file.filename}`;
+        } finally {
+            try {
+                if (fs.existsSync(file.path)) {
+                    fs.unlinkSync(file.path);
                 }
+            } catch (unlinkErr) {
+                console.error('Unlink Error:', unlinkErr.message);
             }
         }
-    }
+    };
 
     try {
-        const query = `
-            INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
-            VALUES ($1, $2, $3, $4, $5, $6) 
-            RETURNING *;
-        `;
-        const values = [
-            userId,
-            mode, 
-            content, 
-            JSON.stringify(platforms), 
-            schedule_time || null, 
-            imagePaths
-        ];
-        
-        const result = await pool.query(query, values);
-        const savedPost = result.rows[0];
+        // CASE A: SCHEDULE MODE (প্রতিটি ছবির জন্য আলাদা দিনে ১টি করে পোস্ট তৈরি হবে)
+        if (mode === 'schedule') {
+            const baseDate = schedule_time ? new Date(schedule_time) : new Date();
+            const savedPosts = [];
 
-        if (process.env.N8N_WEBHOOK_URL) {
-            try {
-                await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
-            } catch (n8nError) {
-                console.error('Error forwarding to n8n:', n8nError.message);
+            if (files.length > 0) {
+                for (let i = 0; i < files.length; i++) {
+                    const imageUrl = await uploadSingleFile(files[i]);
+
+                    // ১ম পোস্ট নির্বাচিত দিনে, ২য় পোস্ট ১ম দিনের ১ দিন পর, ইত্যাদি
+                    const postScheduleDate = new Date(baseDate.getTime() + (i * 24 * 60 * 60 * 1000));
+
+                    const query = `
+                        INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
+                        VALUES ($1, $2, $3, $4, $5, $6) 
+                        RETURNING *;
+                    `;
+                    const values = [
+                        userId,
+                        'schedule',
+                        content,
+                        JSON.stringify(platforms),
+                        postScheduleDate.toISOString(),
+                        [imageUrl]
+                    ];
+
+                    const result = await pool.query(query, values);
+                    savedPosts.push(result.rows[0]);
+                }
+            } else {
+                // ছবি ছাড়া কেবল প্রম্পট শিডিউল করা হলে
+                const query = `
+                    INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
+                    VALUES ($1, $2, $3, $4, $5, $6) 
+                    RETURNING *;
+                `;
+                const values = [
+                    userId,
+                    'schedule',
+                    content,
+                    JSON.stringify(platforms),
+                    baseDate.toISOString(),
+                    []
+                ];
+                const result = await pool.query(query, values);
+                savedPosts.push(result.rows[0]);
             }
+
+            return res.status(201).json({
+                success: true,
+                message: `${savedPosts.length} days of scheduled posts saved successfully!`,
+                posts: savedPosts
+            });
+        } 
+        
+        // CASE B: INSTANT POST (manual / ai_agent)
+        else {
+            const imagePaths = [];
+            for (const file of files) {
+                const url = await uploadSingleFile(file);
+                imagePaths.push(url);
+            }
+
+            const query = `
+                INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
+                VALUES ($1, $2, $3, $4, $5, $6) 
+                RETURNING *;
+            `;
+            const values = [
+                userId,
+                mode,
+                content,
+                JSON.stringify(platforms),
+                null,
+                imagePaths
+            ];
+
+            const result = await pool.query(query, values);
+            const savedPost = result.rows[0];
+
+            if (process.env.N8N_WEBHOOK_URL) {
+                try {
+                    await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
+                } catch (n8nError) {
+                    console.error('Forwarding to n8n failed:', n8nError.message);
+                }
+            }
+
+            return res.status(201).json({
+                success: true,
+                message: 'Post created successfully!',
+                post: savedPost
+            });
         }
 
-        res.status(201).json({
-            success: true,
-            message: 'Post processing completed!',
-            post: savedPost
-        });
     } catch (error) {
         console.error('Save Post Error:', error.message);
         res.status(500).json({ success: false, message: 'Server error: ' + error.message });
     }
 });
 
-// ৭. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক করার এপিআই
+// ৬. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক
 app.get('/user/accounts', async (req, res) => {
     const userId = req.query.user_id;
-
     if (!userId) {
         return res.status(400).json({ success: false, message: 'user_id আবশ্যক!' });
     }
@@ -330,10 +364,9 @@ app.get('/user/accounts', async (req, res) => {
     }
 });
 
-// ৮. সোশ্যাল অ্যাকাউন্ট ডিসকানেক্ট করার এপিআই
+// ৭. অ্যাকাউন্ট ডিসকানেক্ট
 app.post('/auth/disconnect', async (req, res) => {
     const { user_id, platform } = req.body;
-
     if (!user_id || !platform) {
         return res.status(400).json({ success: false, message: 'user_id এবং platform আবশ্যক!' });
     }
