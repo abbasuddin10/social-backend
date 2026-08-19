@@ -16,9 +16,8 @@ app.use(express.json());
 app.use(cors());
 app.use('/uploads', express.static('uploads'));
 
-// 🌐 Google Auth Client ইনিশিয়ালাইজেশন (সঠিকভাবে সেটআপকৃত)
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+// 🌐 Google Auth Client ইনিশিয়ালাইজেশন
+const googleClient = new OAuth2Client();
 
 // 🚀 Supabase Client সেটআপ
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -123,7 +122,7 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// 🌐 ৩. গুগল লগইন / রেজিস্ট্রেশন এপিআই (অপটিমাইজড)
+// 🌐 ৩. গুগল লগইন / রেজিস্ট্রেশন এপিআই (ফিক্সড ডাটাবেস প্যারামিটার)
 app.post('/api/google-login', async (req, res) => {
     const { id_token } = req.body;
 
@@ -133,8 +132,9 @@ app.post('/api/google-login', async (req, res) => {
 
     try {
         // ১. গুগল আইডি টোকেন ভেরিফাই করা
-        const verifyOptions = GOOGLE_CLIENT_ID ? { idToken: id_token, audience: GOOGLE_CLIENT_ID } : { idToken: id_token };
-        const ticket = await googleClient.verifyIdToken(verifyOptions);
+        const ticket = await googleClient.verifyIdToken({
+            idToken: id_token
+        });
 
         const payload = ticket.getPayload();
         const { email, sub: googleId } = payload;
@@ -152,7 +152,9 @@ app.post('/api/google-login', async (req, res) => {
         if (result.rows.length === 0) {
             const dummyPasswordHash = await bcrypt.hash(googleId + '_google_secret', 10);
             const insertQuery = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
-            const insertResult = await pool.query(insertQuery, [insertQuery, dummyPasswordHash]);
+            
+            // 🎯 ফিক্সড: এখানে [email, dummyPasswordHash] হবে
+            const insertResult = await pool.query(insertQuery, [email, dummyPasswordHash]);
             user = insertResult.rows[0];
         } else {
             user = result.rows[0];
@@ -170,7 +172,7 @@ app.post('/api/google-login', async (req, res) => {
 
     } catch (err) {
         console.error('Google Auth Error:', err.message);
-        return res.status(401).json({ success: false, message: 'গুগল অথেন্টিকেশন ব্যর্থ হয়েছে: ' + err.message });
+        return res.status(500).json({ success: false, message: 'গুগল অথেন্টিকেশন ব্যর্থ হয়েছে: ' + err.message });
     }
 });
 
