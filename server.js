@@ -19,7 +19,7 @@ app.use(cors());
 app.use('/uploads', express.static('uploads'));
 
 // ✉️ Resend API ইনিশিয়ালাইজেশন
-const resend = new Resend('re_2YHG1Bmx_K6cXdswhWUAxyYFrXZutJw3L');
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // 🛡️ ব্রুট-ফোর্স সিকিউরিটির জন্য Rate Limiter (১ মিনিটে সর্বোচ্চ ৫ রিকোয়েস্ট)
 const authLimiter = rateLimit({
