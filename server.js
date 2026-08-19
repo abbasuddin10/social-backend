@@ -17,7 +17,8 @@ app.use(cors());
 app.use('/uploads', express.static('uploads'));
 
 // 🌐 Google Auth Client ইনিশিয়ালাইজেশন
-const googleClient = new OAuth2Client();
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '910096214036-4gi7puoqg1edarqub27v7mluqqt6fht6.apps.googleusercontent.com';
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 // 🚀 Supabase Client সেটআপ
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -122,7 +123,7 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// 🌐 ৩. গুগল লগইন / রেজিস্ট্রেশন এপিআই (ফিক্সড ডাটাবেস প্যারামিটার)
+// 🌐 ৩. গুগল লগইন / রেজিস্ট্রেশন এপিআই
 app.post('/api/google-login', async (req, res) => {
     const { id_token } = req.body;
 
@@ -133,7 +134,8 @@ app.post('/api/google-login', async (req, res) => {
     try {
         // ১. গুগল আইডি টোকেন ভেরিফাই করা
         const ticket = await googleClient.verifyIdToken({
-            idToken: id_token
+            idToken: id_token,
+            audience: GOOGLE_CLIENT_ID
         });
 
         const payload = ticket.getPayload();
@@ -153,7 +155,6 @@ app.post('/api/google-login', async (req, res) => {
             const dummyPasswordHash = await bcrypt.hash(googleId + '_google_secret', 10);
             const insertQuery = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
             
-            // 🎯 ফিক্সড: এখানে [email, dummyPasswordHash] হবে
             const insertResult = await pool.query(insertQuery, [email, dummyPasswordHash]);
             user = insertResult.rows[0];
         } else {
@@ -172,7 +173,7 @@ app.post('/api/google-login', async (req, res) => {
 
     } catch (err) {
         console.error('Google Auth Error:', err.message);
-        return res.status(500).json({ success: false, message: 'গুগল অথেন্টিকেশন ব্যর্থ হয়েছে: ' + err.message });
+        return res.status(400).json({ success: false, message: 'গুগল অথেন্টিকেশন ব্যর্থ হয়েছে: ' + err.message });
     }
 });
 
@@ -426,6 +427,11 @@ app.post('/auth/disconnect', async (req, res) => {
         console.error('Disconnect Error:', err);
         res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
     }
+});
+
+// 🛡️ গ্লোবাল ৪-০-৪ হ্যান্ডলার (ভুল URL-এ যেন HTML না গিয়ে সবসময় JSON ফরম্যাটে রেসপন্স যায়)
+app.use((req, res) => {
+    res.status(404).json({ success: false, message: 'অনুরোধকৃত এপিআই এন্ডপয়েন্টটি পাওয়া যায়নি (404 Not Found)' });
 });
 
 const PORT = process.env.PORT || 3000;
