@@ -133,7 +133,7 @@ app.get('/auth/facebook', (req, res) => {
     res.redirect(fbLoginUrl);
 });
 
-// ৪. ফেসবুক কলব্যাক
+// ৪. ফেসবুক কলব্যাক (🎯 page_name সেভ করার সাপোর্ট যুক্ত করা হলো)
 app.get('/auth/facebook/callback', async (req, res) => {
     const code = req.query.code;
     const stateStr = req.query.state;
@@ -170,11 +170,12 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const pages = pagesResponse.data.data;
 
         for (const page of pages) {
-            // 🎯 আগের কোনো রেকর্ড থাকলে রিমুভ করে নতুন তাজা একসেস টোকেন সেভ করা
+            // 🎯 আগের কোনো রেকর্ড থাকলে রিমুভ করা
             await pool.query('DELETE FROM social_accounts WHERE user_id = $1 AND platform = $2', [userId, 'facebook']);
 
-            const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5)';
-            await pool.query(insertQuery, [userId, page.id, page.access_token, true, 'facebook']);
+            // 🎯 page_name সহ ডাটাবেজে ইনসার্ট করা
+            const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, access_token, is_active, platform, page_name) VALUES ($1, $2, $3, $4, $5, $6)';
+            await pool.query(insertQuery, [userId, page.id, page.access_token, true, 'facebook', page.name]);
         }
 
         res.send(`<html><body style="font-family: Arial; text-align: center; padding: 50px;"><h2>🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2><p>ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p></body></html>`);
@@ -340,7 +341,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
     }
 });
 
-// ৬. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক
+// ৬. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক (🎯 platform-এর পাশাপাশি page_name পাঠানোর সাপোর্ট যুক্ত করা হলো)
 app.get('/user/accounts', async (req, res) => {
     const userId = req.query.user_id;
     if (!userId) {
@@ -348,11 +349,10 @@ app.get('/user/accounts', async (req, res) => {
     }
 
     try {
-        const query = 'SELECT platform FROM social_accounts WHERE user_id = $1 AND is_active = true';
+        const query = 'SELECT platform, page_name FROM social_accounts WHERE user_id = $1 AND is_active = true';
         const result = await pool.query(query, [userId]);
         
-        const platforms = result.rows.map(row => row.platform.toLowerCase().trim());
-        res.status(200).json(platforms);
+        res.status(200).json(result.rows);
     } catch (err) {
         console.error('Fetch Accounts Error:', err);
         res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
@@ -367,7 +367,6 @@ app.post('/auth/disconnect', async (req, res) => {
     }
 
     try {
-        // 🎯 is_active = false করার বদলে ডাটাবেস থেকে রিমুভ করা হচ্ছে
         const query = 'DELETE FROM social_accounts WHERE user_id = $1 AND platform = $2';
         await pool.query(query, [user_id, platform.toLowerCase().trim()]);
 
