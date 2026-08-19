@@ -29,15 +29,19 @@ const authLimiter = rateLimit({
 
 
 // ✉️ Nodemailer সার্ভিস কনফিগারেশন (Render Cloud Compatible)
+// ✉️ Nodemailer সার্ভিস কনফিগারেশন (IPv4 Force Fix)
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
   port: 587,
-  secure: false, // Port 587 এর জন্য false হতে হবে
+  secure: false, // Port 587 এর জন্য false
+  family: 4, // 💡 এই লাইনটি যোগ করুন (IPv4 ফোর্স করার জন্য)
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
-  connectionTimeout: 10000, // 10 সেকেন্ড টাইমআউট
+  tls: {
+    rejectUnauthorized: false
+  }
 });
 
 // 🎲 ওটিপি ইমেইল পাঠানোর হেলপার ফাংশন
