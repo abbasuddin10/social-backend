@@ -26,16 +26,15 @@ const authLimiter = rateLimit({
   message: { success: false, message: 'অতিরিক্ত চেষ্টা করা হয়েছে! অনুগ্রহ করে ১ মিনিট পর আবার চেষ্টা করুন।' }
 });
 
-// ✉️ Nodemailer সার্ভিস কনফিগারেশন
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
-  port: 587,
-  secure: false,
-  family: 4,
+  port: 465,
+  secure: true, // Port 465 এর জন্য true
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
+  family: 4, // 💡 এটি IPv6 বাদ দিয়ে IPv4 ব্যবহার করতে বাধ্য করবে
   tls: {
     rejectUnauthorized: false
   }
