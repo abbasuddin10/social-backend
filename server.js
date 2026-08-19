@@ -27,13 +27,17 @@ const authLimiter = rateLimit({
   message: { success: false, message: 'অতিরিক্ত চেষ্টা করা হয়েছে! অনুগ্রহ করে ১ মিনিট পর আবার চেষ্টা করুন।' }
 });
 
-// 📧 Nodemailer সার্ভিস কনফিগারেশন (Gmail App Password দিয়ে চলবে)
+
+// ✉️ Nodemailer সার্ভিস কনফিগারেশন (Render Cloud Compatible)
 const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-    }
+  host: 'smtp.gmail.com',
+  port: 587,
+  secure: false, // Port 587 এর জন্য false হতে হবে
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+  connectionTimeout: 10000, // 10 সেকেন্ড টাইমআউট
 });
 
 // 🎲 ওটিপি ইমেইল পাঠানোর হেলপার ফাংশন
