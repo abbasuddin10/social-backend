@@ -379,6 +379,60 @@ app.post('/auth/disconnect', async (req, res) => {
         res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
     }
 });
+// 🌐 ৮. গুগল লগইন / রেজিস্ট্রেশন এপিআই
+app.post('/api/google-login', async (req, res) => {
+    const { id_token } = req.body;
+
+    if (!id_token) {
+        return res.status(400).json({ success: false, message: 'Google ID Token আবশ্যক!' });
+    }
+
+    try {
+        // ১. গুগল আইডি টোকেন ভেরিফাই করা
+        const ticket = await googleClient.verifyIdToken({
+            idToken: id_token,
+            audience: process.env.GOOGLE_CLIENT_ID,
+        });
+
+        const payload = ticket.getPayload();
+        const { email, sub: googleId } = payload; // sub হলো গুগলের ইউনিক ইউজার আইডি
+
+        if (!email) {
+            return res.status(400).json({ success: false, message: 'গুগল অ্যাকাউন্টে কোনো ইমেইল পাওয়া যায়নি!' });
+        }
+
+        // ২. Neon DB-তে ইউজার চেক করা
+        let query = 'SELECT * FROM users WHERE email = $1';
+        let result = await pool.query(query, [email]);
+
+        let user;
+
+        if (result.rows.length === 0) {
+            // ইউজার না থাকলে Neon DB-তে নতুন ইউজার তৈরি করা
+            // (নোট: পাসওয়ার্ড ছাড়া গুগল সোর্সের জন্য একটি র‍্যান্ডম হ্যাশ সেভ করা হচ্ছে)
+            const dummyPasswordHash = await bcrypt.hash(googleId + '_google_secret', 10);
+            const insertQuery = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
+            const insertResult = await pool.query(insertQuery, [email, dummyPasswordHash]);
+            user = insertResult.rows[0];
+        } else {
+            user = result.rows[0];
+        }
+
+        // ৩. JWT টোকেন জেনারেট করা
+        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
+
+        res.status(200).json({
+            success: true,
+            message: 'গুগল দিয়ে সফলভাবে লগইন হয়েছে!',
+            token: token,
+            user: { id: user.id, email: user.email }
+        });
+
+    } catch (err) {
+        console.error('Google Auth Error:', err);
+        res.status(500).json({ success: false, message: 'গুগল অথেন্টিকেশন ব্যর্থ হয়েছে: ' + err.message });
+    }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
