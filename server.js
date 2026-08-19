@@ -170,16 +170,11 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const pages = pagesResponse.data.data;
 
         for (const page of pages) {
-            const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2';
-            const existing = await pool.query(checkQuery, [page.id, userId]);
+            // 🎯 আগের কোনো রেকর্ড থাকলে রিমুভ করে নতুন তাজা একসেস টোকেন সেভ করা
+            await pool.query('DELETE FROM social_accounts WHERE user_id = $1 AND platform = $2', [userId, 'facebook']);
 
-            if (existing.rows.length > 0) {
-                const updateQuery = 'UPDATE social_accounts SET access_token = $2, is_active = TRUE, updated_at = NOW() WHERE page_id = $1 AND user_id = $3';
-                await pool.query(updateQuery, [page.id, page.access_token, userId]);
-            } else {
-                const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5)';
-                await pool.query(insertQuery, [userId, page.id, page.access_token, true, 'facebook']);
-            }
+            const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5)';
+            await pool.query(insertQuery, [userId, page.id, page.access_token, true, 'facebook']);
         }
 
         res.send(`<html><body style="font-family: Arial; text-align: center; padding: 50px;"><h2>🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2><p>ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p></body></html>`);
@@ -364,7 +359,7 @@ app.get('/user/accounts', async (req, res) => {
     }
 });
 
-// ৭. অ্যাকাউন্ট ডিসকানেক্ট
+// ৭. অ্যাকাউন্ট ডিসকানেক্ট (ডাটাবেস থেকে সম্পূর্ণ রিমুভ)
 app.post('/auth/disconnect', async (req, res) => {
     const { user_id, platform } = req.body;
     if (!user_id || !platform) {
@@ -372,12 +367,13 @@ app.post('/auth/disconnect', async (req, res) => {
     }
 
     try {
-        const query = 'UPDATE social_accounts SET is_active = false, access_token = null, updated_at = NOW() WHERE user_id = $1 AND platform = $2';
+        // 🎯 is_active = false করার বদলে ডাটাবেস থেকে রিমুভ করা হচ্ছে
+        const query = 'DELETE FROM social_accounts WHERE user_id = $1 AND platform = $2';
         await pool.query(query, [user_id, platform.toLowerCase().trim()]);
 
         res.status(200).json({ 
             success: true, 
-            message: `${platform} সফলভাবে ডিসকানেক্ট করা হয়েছে।` 
+            message: `${platform} সফলভাবে ডিসকানেক্ট ও ডাটাবেস থেকে রিমুভ করা হয়েছে।` 
         });
     } catch (err) {
         console.error('Disconnect Error:', err);
