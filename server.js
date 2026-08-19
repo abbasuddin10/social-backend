@@ -8,12 +8,17 @@ const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
+const { OAuth2Client } = require('google-auth-library'); // 👈 গুগল অথেন্টিকেশন প্যাকেজ
 
 const app = express();
 
 app.use(express.json());
 app.use(cors());
 app.use('/uploads', express.static('uploads'));
+
+// 🌐 Google Auth Client ইনিশিয়ালাইজেশন
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
 // 🚀 Supabase Client সেটআপ
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -82,7 +87,7 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-// ২. লগইন এপিআই
+// ২. পাসওয়ার্ড দিয়ে সাধারণ লগইন এপিআই
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
 
@@ -118,7 +123,61 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// ৩. ফেসবুক লগইন রিডাইরেক্ট
+// 🌐 ৩. গুগল লগইন / রেজিস্ট্রেশন এপিআই
+app.post('/api/google-login', async (req, res) => {
+    const { id_token } = req.body;
+
+    if (!id_token) {
+        return res.status(400).json({ success: false, message: 'Google ID Token আবশ্যক!' });
+    }
+
+    try {
+        // ১. গুগল আইডি টোকেন ভেরিফাই করা
+        const ticket = await googleClient.verifyIdToken({
+            idToken: id_token,
+            audience: GOOGLE_CLIENT_ID,
+        });
+
+        const payload = ticket.getPayload();
+        const { email, sub: googleId } = payload; // sub হলো গুগলের ইউনিক ইউজার আইডি
+
+        if (!email) {
+            return res.status(400).json({ success: false, message: 'গুগল অ্যাকাউন্টে কোনো ইমেইল পাওয়া যায়নি!' });
+        }
+
+        // ২. Neon DB-তে ইউজার চেক করা
+        let query = 'SELECT * FROM users WHERE email = $1';
+        let result = await pool.query(query, [email]);
+
+        let user;
+
+        if (result.rows.length === 0) {
+            // ডাটাবেজে ইউজার না থাকলে নতুন ইউজার ক্রিয়েট করা
+            const dummyPasswordHash = await bcrypt.hash(googleId + '_google_secret', 10);
+            const insertQuery = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
+            const insertResult = await pool.query(insertQuery, [email, dummyPasswordHash]);
+            user = insertResult.rows[0];
+        } else {
+            user = result.rows[0];
+        }
+
+        // ৩. JWT টোকেন জেনারেট করা
+        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
+
+        res.status(200).json({
+            success: true,
+            message: 'গুগল দিয়ে সফলভাবে লগইন হয়েছে!',
+            token: token,
+            user: { id: user.id, email: user.email }
+        });
+
+    } catch (err) {
+        console.error('Google Auth Error:', err);
+        res.status(500).json({ success: false, message: 'গুগল অথেন্টিকেশন ব্যর্থ হয়েছে: ' + err.message });
+    }
+});
+
+// ৪. ফেসবুক লগইন রিডাইরেক্ট
 app.get('/auth/facebook', (req, res) => {
     const userId = req.query.user_id;
     if (!userId) {
@@ -133,7 +192,7 @@ app.get('/auth/facebook', (req, res) => {
     res.redirect(fbLoginUrl);
 });
 
-// ৪. ফেসবুক কলব্যাক (🎯 page_name সেভ করার সাপোর্ট যুক্ত করা হলো)
+// ৫. ফেসবুক কলব্যাক
 app.get('/auth/facebook/callback', async (req, res) => {
     const code = req.query.code;
     const stateStr = req.query.state;
@@ -170,10 +229,8 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const pages = pagesResponse.data.data;
 
         for (const page of pages) {
-            // 🎯 আগের কোনো রেকর্ড থাকলে রিমুভ করা
             await pool.query('DELETE FROM social_accounts WHERE user_id = $1 AND platform = $2', [userId, 'facebook']);
 
-            // 🎯 page_name সহ ডাটাবেজে ইনসার্ট করা
             const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, access_token, is_active, platform, page_name) VALUES ($1, $2, $3, $4, $5, $6)';
             await pool.query(insertQuery, [userId, page.id, page.access_token, true, 'facebook', page.name]);
         }
@@ -185,7 +242,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
     }
 });
 
-// 🚀 ৫. পোস্ট ডেটা সেভ করার আপডেট এপিআই (SCHEDULE MULTI-IMAGE CONSECUTIVE DAYS SUPPORT)
+// 🚀 ৬. পোস্ট ডেটা সেভ করার আপডেট এপিআই
 app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
     const userId = req.user.id;
     const { mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
@@ -240,7 +297,6 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
     };
 
     try {
-        // CASE A: SCHEDULE MODE (প্রতিটি ছবির জন্য আলাদা দিনে ১টি করে পোস্ট তৈরি হবে)
         if (mode === 'schedule') {
             const baseDate = schedule_time ? new Date(schedule_time) : new Date();
             const savedPosts = [];
@@ -248,8 +304,6 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
             if (files.length > 0) {
                 for (let i = 0; i < files.length; i++) {
                     const imageUrl = await uploadSingleFile(files[i]);
-
-                    // ১ম পোস্ট নির্বাচিত দিনে, ২য় পোস্ট ১ম দিনের ১ দিন পর, ইত্যাদি
                     const postScheduleDate = new Date(baseDate.getTime() + (i * 24 * 60 * 60 * 1000));
 
                     const query = `
@@ -270,7 +324,6 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
                     savedPosts.push(result.rows[0]);
                 }
             } else {
-                // ছবি ছাড়া কেবল প্রম্পট শিডিউল করা হলে
                 const query = `
                     INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
                     VALUES ($1, $2, $3, $4, $5, $6) 
@@ -293,10 +346,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
                 message: `${savedPosts.length} days of scheduled posts saved successfully!`,
                 posts: savedPosts
             });
-        } 
-        
-        // CASE B: INSTANT POST (manual / ai_agent)
-        else {
+        } else {
             const imagePaths = [];
             for (const file of files) {
                 const url = await uploadSingleFile(file);
@@ -341,7 +391,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
     }
 });
 
-// ৬. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক (🎯 platform-এর পাশাপাশি page_name পাঠানোর সাপোর্ট যুক্ত করা হলো)
+// ৭. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক
 app.get('/user/accounts', async (req, res) => {
     const userId = req.query.user_id;
     if (!userId) {
@@ -359,7 +409,7 @@ app.get('/user/accounts', async (req, res) => {
     }
 });
 
-// ৭. অ্যাকাউন্ট ডিসকানেক্ট (ডাটাবেস থেকে সম্পূর্ণ রিমুভ)
+// ৮. অ্যাকাউন্ট ডিসকানেক্ট
 app.post('/auth/disconnect', async (req, res) => {
     const { user_id, platform } = req.body;
     if (!user_id || !platform) {
@@ -377,60 +427,6 @@ app.post('/auth/disconnect', async (req, res) => {
     } catch (err) {
         console.error('Disconnect Error:', err);
         res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
-    }
-});
-// 🌐 ৮. গুগল লগইন / রেজিস্ট্রেশন এপিআই
-app.post('/api/google-login', async (req, res) => {
-    const { id_token } = req.body;
-
-    if (!id_token) {
-        return res.status(400).json({ success: false, message: 'Google ID Token আবশ্যক!' });
-    }
-
-    try {
-        // ১. গুগল আইডি টোকেন ভেরিফাই করা
-        const ticket = await googleClient.verifyIdToken({
-            idToken: id_token,
-            audience: process.env.GOOGLE_CLIENT_ID,
-        });
-
-        const payload = ticket.getPayload();
-        const { email, sub: googleId } = payload; // sub হলো গুগলের ইউনিক ইউজার আইডি
-
-        if (!email) {
-            return res.status(400).json({ success: false, message: 'গুগল অ্যাকাউন্টে কোনো ইমেইল পাওয়া যায়নি!' });
-        }
-
-        // ২. Neon DB-তে ইউজার চেক করা
-        let query = 'SELECT * FROM users WHERE email = $1';
-        let result = await pool.query(query, [email]);
-
-        let user;
-
-        if (result.rows.length === 0) {
-            // ইউজার না থাকলে Neon DB-তে নতুন ইউজার তৈরি করা
-            // (নোট: পাসওয়ার্ড ছাড়া গুগল সোর্সের জন্য একটি র‍্যান্ডম হ্যাশ সেভ করা হচ্ছে)
-            const dummyPasswordHash = await bcrypt.hash(googleId + '_google_secret', 10);
-            const insertQuery = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
-            const insertResult = await pool.query(insertQuery, [email, dummyPasswordHash]);
-            user = insertResult.rows[0];
-        } else {
-            user = result.rows[0];
-        }
-
-        // ৩. JWT টোকেন জেনারেট করা
-        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
-
-        res.status(200).json({
-            success: true,
-            message: 'গুগল দিয়ে সফলভাবে লগইন হয়েছে!',
-            token: token,
-            user: { id: user.id, email: user.email }
-        });
-
-    } catch (err) {
-        console.error('Google Auth Error:', err);
-        res.status(500).json({ success: false, message: 'গুগল অথেন্টিকেশন ব্যর্থ হয়েছে: ' + err.message });
     }
 });
 
