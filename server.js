@@ -7,16 +7,19 @@ const upload = multer({ dest: 'uploads/' });
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
-const nodemailer = require('nodemailer');
 const rateLimit = require('express-rate-limit');
 const { createClient } = require('@supabase/supabase-js');
 const { OAuth2Client } = require('google-auth-library');
+const { Resend } = require('resend'); // 💡 Nodemailer এর বদলে Resend
 
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json());
 app.use(cors());
 app.use('/uploads', express.static('uploads'));
+
+// ✉️ Resend API ইনিশিয়ালাইজেশন
+const resend = new Resend('re_2YHG1Bmx_K6cXdswhWUAxyYFrXZutJw3L');
 
 // 🛡️ ব্রুট-ফোর্স সিকিউরিটির জন্য Rate Limiter (১ মিনিটে সর্বোচ্চ ৫ রিকোয়েস্ট)
 const authLimiter = rateLimit({
@@ -26,29 +29,30 @@ const authLimiter = rateLimit({
   message: { success: false, message: 'অতিরিক্ত চেষ্টা করা হয়েছে! অনুগ্রহ করে ১ মিনিট পর আবার চেষ্টা করুন।' }
 });
 
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,
-  secure: true, // Port 465 এর জন্য true
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-  family: 4, // 💡 এটি IPv6 বাদ দিয়ে IPv4 ব্যবহার করতে বাধ্য করবে
-  tls: {
-    rejectUnauthorized: false
-  }
-});
-
-// 🎲 ওটিপি ইমেইল পাঠানোর হেলপার ফাংশন
+// 🎲 Resend দিয়ে OTP ইমেইল পাঠানোর হেলপার ফাংশন
 const sendOtpEmail = async (email, otp, title) => {
-    const mailOptions = {
-        from: `"Your App" <${process.env.EMAIL_USER}>`,
-        to: email,
-        subject: title,
-        html: `<h3>আপনার সিকিউরিটি OTP কোড হলো: <b style="color: #6200ee; font-size: 24px;">${otp}</b></h3><p>কোডটি আগামী ৫ মিনিটের জন্য কার্যকর থাকবে।</p>`
-    };
-    await transporter.sendMail(mailOptions);
+    try {
+        const data = await resend.emails.send({
+            from: 'onboarding@resend.dev', // Resend-এর ডিফল্ট টেস্ট সেন্ডার
+            to: email,
+            subject: title,
+            html: `
+                <div style="font-family: Arial, sans-serif; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px; max-width: 500px;">
+                    <h2 style="color: #6200ee;">${title}</h2>
+                    <p style="font-size: 16px;">আপনার সিকিউরিটি OTP কোড হলো:</p>
+                    <div style="background-color: #f3f4f6; padding: 12px; text-align: center; border-radius: 6px; margin: 15px 0;">
+                        <span style="font-size: 28px; font-weight: bold; letter-spacing: 4px; color: #111827;">${otp}</span>
+                    </div>
+                    <p style="font-size: 14px; color: #6b7280;">কোডটি আগামী ৫ মিনিটের জন্য কার্যকর থাকবে। এটি কারো সাথে শেয়ার করবেন না।</p>
+                </div>
+            `
+        });
+        console.log('Email sent via Resend successfully:', data);
+        return data;
+    } catch (error) {
+        console.error('Resend Send Error:', error);
+        throw new Error('ইমেইল পাঠাতে সমস্যা হয়েছে: ' + error.message);
+    }
 };
 
 // 🌐 Google Auth Client ইনিশিয়ালিজেশন
@@ -307,14 +311,14 @@ app.post('/api/google-login', async (req, res) => {
 
         return res.status(200).json({
             success: true,
-            message: 'গুগল দিয়ে সফলভাবে লগইন হয়েছে!',
+            message: 'গুগল দিয়ে সফলভাবে লগইন হয়েছে!',
             token: token,
             user: { id: user.id, email: user.email }
         });
 
     } catch (err) {
         console.error('Google Auth Error:', err.message);
-        return res.status(400).json({ success: false, message: 'গুগল অথেন্টিকেশন ব্যর্থ হয়েছে: ' + err.message });
+        return res.status(400).json({ success: false, message: 'গুগল অথেন্টিকেশন ব্যর্থ হয়েছে: ' + err.message });
     }
 });
 
