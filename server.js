@@ -8,7 +8,7 @@ const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
-const { OAuth2Client } = require('google-auth-library'); // 👈 গুগল অথেন্টিকেশন প্যাকেজ
+const { OAuth2Client } = require('google-auth-library');
 
 const app = express();
 
@@ -16,7 +16,7 @@ app.use(express.json());
 app.use(cors());
 app.use('/uploads', express.static('uploads'));
 
-// 🌐 Google Auth Client ইনিশিয়ালাইজেশন
+// 🌐 Google Auth Client ইনিশিয়ালাইজেশন (সঠিকভাবে সেটআপকৃত)
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
@@ -123,7 +123,7 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// 🌐 ৩. গুগল লগইন / রেজিস্ট্রেশন এপিআই
+// 🌐 ৩. গুগল লগইন / রেজিস্ট্রেশন এপিআই (অপটিমাইজড)
 app.post('/api/google-login', async (req, res) => {
     const { id_token } = req.body;
 
@@ -133,16 +133,14 @@ app.post('/api/google-login', async (req, res) => {
 
     try {
         // ১. গুগল আইডি টোকেন ভেরিফাই করা
-        const ticket = await googleClient.verifyIdToken({
-            idToken: id_token,
-            audience: GOOGLE_CLIENT_ID,
-        });
+        const verifyOptions = GOOGLE_CLIENT_ID ? { idToken: id_token, audience: GOOGLE_CLIENT_ID } : { idToken: id_token };
+        const ticket = await googleClient.verifyIdToken(verifyOptions);
 
         const payload = ticket.getPayload();
-        const { email, sub: googleId } = payload; // sub হলো গুগলের ইউনিক ইউজার আইডি
+        const { email, sub: googleId } = payload;
 
         if (!email) {
-            return res.status(400).json({ success: false, message: 'গুগল অ্যাকাউন্টে কোনো ইমেইল পাওয়া যায়নি!' });
+            return res.status(400).json({ success: false, message: 'গুগল অ্যাকাউন্টে কোনো ইমেইল পাওয়া যায়নি!' });
         }
 
         // ২. Neon DB-তে ইউজার চেক করা
@@ -152,10 +150,9 @@ app.post('/api/google-login', async (req, res) => {
         let user;
 
         if (result.rows.length === 0) {
-            // ডাটাবেজে ইউজার না থাকলে নতুন ইউজার ক্রিয়েট করা
             const dummyPasswordHash = await bcrypt.hash(googleId + '_google_secret', 10);
             const insertQuery = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
-            const insertResult = await pool.query(insertQuery, [email, dummyPasswordHash]);
+            const insertResult = await pool.query(insertQuery, [insertQuery, dummyPasswordHash]);
             user = insertResult.rows[0];
         } else {
             user = result.rows[0];
@@ -164,16 +161,16 @@ app.post('/api/google-login', async (req, res) => {
         // ৩. JWT টোকেন জেনারেট করা
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
 
-        res.status(200).json({
+        return res.status(200).json({
             success: true,
-            message: 'গুগল দিয়ে সফলভাবে লগইন হয়েছে!',
+            message: 'গুগল দিয়ে সফলভাবে লগইন হয়েছে!',
             token: token,
             user: { id: user.id, email: user.email }
         });
 
     } catch (err) {
-        console.error('Google Auth Error:', err);
-        res.status(500).json({ success: false, message: 'গুগল অথেন্টিকেশন ব্যর্থ হয়েছে: ' + err.message });
+        console.error('Google Auth Error:', err.message);
+        return res.status(401).json({ success: false, message: 'গুগল অথেন্টিকেশন ব্যর্থ হয়েছে: ' + err.message });
     }
 });
 
@@ -242,7 +239,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
     }
 });
 
-// 🚀 ৬. পোস্ট ডেটা সেভ করার আপডেট এপিআই
+// 🚀 ৬. পোস্ট ডেটা সেভ করার এপিআই
 app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
     const userId = req.user.id;
     const { mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
@@ -255,7 +252,6 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
 
     const files = req.files || [];
 
-    // Helper: Supabase/Local Upload Logic
     const uploadSingleFile = async (file) => {
         try {
             if (supabase) {
