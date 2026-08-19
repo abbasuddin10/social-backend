@@ -19,22 +19,19 @@ app.use(cors());
 app.use('/uploads', express.static('uploads'));
 
 // 🛡️ ব্রুট-ফোর্স সিকিউরিটির জন্য Rate Limiter (১ মিনিটে সর্বোচ্চ ৫ রিকোয়েস্ট)
-
 const authLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
   max: 5,
-  validate: { xForwardedForHeader: false }, // 💡 Render Proxy এরর ফিক্স করার জন্য
+  validate: { xForwardedForHeader: false },
   message: { success: false, message: 'অতিরিক্ত চেষ্টা করা হয়েছে! অনুগ্রহ করে ১ মিনিট পর আবার চেষ্টা করুন।' }
 });
 
-
-// ✉️ Nodemailer সার্ভিস কনফিগারেশন (Render Cloud Compatible)
-// ✉️ Nodemailer সার্ভিস কনফিগারেশন (IPv4 Force Fix)
+// ✉️ Nodemailer সার্ভিস কনফিগারেশন
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
   port: 587,
-  secure: false, // Port 587 এর জন্য false
-  family: 4, // 💡 এই লাইনটি যোগ করুন (IPv4 ফোর্স করার জন্য)
+  secure: false,
+  family: 4,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
@@ -94,15 +91,14 @@ app.get('/', (req, res) => {
     res.send('Node.js Backend Server with Neon DB is running!');
 });
 
-// 📩 ১. OTP সেন্ড করার এপিআই (রেজিস্ট্রেশন ও পাসওয়ার্ড রিসেটের জন্য)
+// 📩 ১. OTP সেন্ড করার এপিআই (পাসওয়ার্ড রিসেটের জন্য)
 app.post('/api/send-otp', authLimiter, async (req, res) => {
-    const { email, type } = req.body; // type: 'register' or 'reset'
+    const { email, type } = req.body; // type: 'reset'
 
     if (!email) {
         return res.status(400).json({ success: false, message: 'ইমেইল আবশ্যক!' });
     }
 
-    // 🔍 ফেক/টেম্পোরারি ইমেইল ডোমেইন ফিল্টার
     const disposableDomains = ['tempmail.com', '10minutemail.com', 'dispostable.com', 'guerrillamail.com'];
     const emailDomain = email.split('@')[1]?.toLowerCase();
     if (disposableDomains.includes(emailDomain)) {
@@ -110,7 +106,6 @@ app.post('/api/send-otp', authLimiter, async (req, res) => {
     }
 
     try {
-        // ফরগেট পাসওয়ার্ডের ক্ষেত্রে ইমেইল ডাটাবেসে আছে কি না চেক
         if (type === 'reset') {
             const userCheck = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
             if (userCheck.rows.length === 0) {
@@ -118,8 +113,8 @@ app.post('/api/send-otp', authLimiter, async (req, res) => {
             }
         }
 
-        const otp = Math.floor(100000 + Math.random() * 900000).toString(); // ৬ ডিজিটের OTP
-        const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // ৫ মিনিট মেয়াদ
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
 
         await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
         await pool.query('INSERT INTO email_otps (email, otp, expires_at) VALUES ($1, $2, $3)', [email, otp, expiresAt]);
@@ -134,38 +129,25 @@ app.post('/api/send-otp', authLimiter, async (req, res) => {
     }
 });
 
-// ২. ওটিপি ভেরিফাই করে রেজিস্ট্রেশন এপিআই
+// ২. সরাসরি রেজিস্ট্রেশন এপিআই (OTP ছাড়া)
 app.post('/api/register', authLimiter, async (req, res) => {
-    const { email, password, otp } = req.body;
+    const { email, password } = req.body;
 
-    if (!email || !password || !otp) {
-        return res.status(400).json({ success: false, message: 'ইমেইল, পাসওয়ার্ড এবং OTP আবশ্যক!' });
+    if (!email || !password) {
+        return res.status(400).json({ success: false, message: 'ইমেইল এবং পাসওয়ার্ড আবশ্যক!' });
     }
 
     try {
-        // OTP ভেরিফিকেশন
-        const otpResult = await pool.query(
-            'SELECT * FROM email_otps WHERE email = $1 AND otp = $2 AND expires_at > NOW()',
-            [email, otp]
-        );
-
-        if (otpResult.rows.length === 0) {
-            return res.status(400).json({ success: false, message: 'ভুল অথবা মেয়াদোত্তীর্ণ OTP!' });
-        }
-
         const hashedPassword = await bcrypt.hash(password, 10);
         const query = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
         const result = await pool.query(query, [email, hashedPassword]);
-        
-        // ব্যবহৃত OTP ডিলিট করা
-        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
 
         const user = result.rows[0];
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
 
         res.status(201).json({
             success: true,
-            message: 'অ্যাকাউন্ট ভেরিফাইড এবং সফলভাবে তৈরি হয়েছে!',
+            message: 'সফলভাবে অ্যাকাউন্ট তৈরি হয়েছে!',
             token: token,
             user: { id: user.id, email: user.email }
         });
@@ -187,7 +169,6 @@ app.post('/api/reset-password', authLimiter, async (req, res) => {
     }
 
     try {
-        // OTP চেক
         const otpResult = await pool.query(
             'SELECT * FROM email_otps WHERE email = $1 AND otp = $2 AND expires_at > NOW()',
             [email, otp]
@@ -197,7 +178,6 @@ app.post('/api/reset-password', authLimiter, async (req, res) => {
             return res.status(400).json({ success: false, message: 'ভুল অথবা মেয়াদোত্তীর্ণ OTP!' });
         }
 
-        // নতুন পাসওয়ার্ড হ্যাশ করে আপডেট করা
         const hashedPassword = await bcrypt.hash(newPassword, 10);
         await pool.query('UPDATE users SET password = $1 WHERE email = $2', [hashedPassword, email]);
         await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
@@ -209,7 +189,7 @@ app.post('/api/reset-password', authLimiter, async (req, res) => {
     }
 });
 
-// ৪. পাসওয়ার্ড দিয়ে সাধারণ লগইন এপিআই
+// ৪. ধাপ ১: ইমেইল ও পাসওয়ার্ড দিয়ে লগইন চেষ্টা এবং ইমেইলে OTP পাঠানো
 app.post('/api/login', authLimiter, async (req, res) => {
     const { email, password } = req.body;
 
@@ -231,6 +211,49 @@ app.post('/api/login', authLimiter, async (req, res) => {
             return res.status(401).json({ success: false, message: 'পাসওয়ার্ড ভুল হয়েছে!' });
         }
 
+        // পাসওয়ার্ড সঠিক হলে ইমেইলে OTP পাঠাব
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+
+        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
+        await pool.query('INSERT INTO email_otps (email, otp, expires_at) VALUES ($1, $2, $3)', [email, otp, expiresAt]);
+
+        await sendOtpEmail(email, otp, 'আপনার লগইন ভেরিফিকেশন OTP');
+
+        res.status(200).json({
+            success: true,
+            requiresOtp: true,
+            message: 'পাসওয়ার্ড সঠিক! আপনার ইমেইলে OTP পাঠানো হয়েছে।'
+        });
+    } catch (err) {
+        console.error('Login Error:', err);
+        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
+    }
+});
+
+// ৪. ধাপ ২: লগইন OTP ভেরিফাই করা
+app.post('/api/login-verify-otp', authLimiter, async (req, res) => {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+        return res.status(400).json({ success: false, message: 'ইমেইল এবং OTP আবশ্যক!' });
+    }
+
+    try {
+        const otpResult = await pool.query(
+            'SELECT * FROM email_otps WHERE email = $1 AND otp = $2 AND expires_at > NOW()',
+            [email, otp]
+        );
+
+        if (otpResult.rows.length === 0) {
+            return res.status(400).json({ success: false, message: 'ভুল অথবা মেয়াদোত্তীর্ণ OTP!' });
+        }
+
+        const userResult = await pool.query('SELECT id, email FROM users WHERE email = $1', [email]);
+        const user = userResult.rows[0];
+
+        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
+
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
 
         res.status(200).json({
@@ -240,7 +263,7 @@ app.post('/api/login', authLimiter, async (req, res) => {
             user: { id: user.id, email: user.email }
         });
     } catch (err) {
-        console.error('Login Error:', err);
+        console.error('Verify Login OTP Error:', err);
         res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
     }
 });
