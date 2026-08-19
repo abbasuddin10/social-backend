@@ -7,6 +7,8 @@ const upload = multer({ dest: 'uploads/' });
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
+const nodemailer = require('nodemailer');
+const rateLimit = require('express-rate-limit');
 const { createClient } = require('@supabase/supabase-js');
 const { OAuth2Client } = require('google-auth-library');
 
@@ -16,7 +18,34 @@ app.use(express.json());
 app.use(cors());
 app.use('/uploads', express.static('uploads'));
 
-// 🌐 Google Auth Client ইনিশিয়ালাইজেশন
+// 🛡️ ব্রুট-ফোর্স সিকিউরিটির জন্য Rate Limiter (১ মিনিটে সর্বোচ্চ ৫ রিকোয়েস্ট)
+const authLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, 
+    max: 5,
+    message: { success: false, message: 'অতিরিক্ত চেষ্টা করা হয়েছে! অনুগ্রহ করে ১ মিনিট পর আবার চেষ্টা করুন।' }
+});
+
+// 📧 Nodemailer সার্ভিস কনফিগারেশন (Gmail App Password দিয়ে চলবে)
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS
+    }
+});
+
+// 🎲 ওটিপি ইমেইল পাঠানোর হেলপার ফাংশন
+const sendOtpEmail = async (email, otp, title) => {
+    const mailOptions = {
+        from: `"Your App" <${process.env.EMAIL_USER}>`,
+        to: email,
+        subject: title,
+        html: `<h3>আপনার সিকিউরিটি OTP কোড হলো: <b style="color: #6200ee; font-size: 24px;">${otp}</b></h3><p>কোডটি আগামী ৫ মিনিটের জন্য কার্যকর থাকবে।</p>`
+    };
+    await transporter.sendMail(mailOptions);
+};
+
+// 🌐 Google Auth Client ইনিশিয়ালিজেশন
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '910096214036-4gi7puoqg1edarqub27v7mluqqt6fht6.apps.googleusercontent.com';
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
@@ -55,26 +84,78 @@ app.get('/', (req, res) => {
     res.send('Node.js Backend Server with Neon DB is running!');
 });
 
-// ১. রেজিস্ট্রেশন এপিআই
-app.post('/api/register', async (req, res) => {
-    const { email, password } = req.body;
+// 📩 ১. OTP সেন্ড করার এপিআই (রেজিস্ট্রেশন ও পাসওয়ার্ড রিসেটের জন্য)
+app.post('/api/send-otp', authLimiter, async (req, res) => {
+    const { email, type } = req.body; // type: 'register' or 'reset'
 
-    if (!email || !password) {
-        return res.status(400).json({ success: false, message: 'ইমেইল এবং পাসওয়ার্ড আবশ্যক!' });
+    if (!email) {
+        return res.status(400).json({ success: false, message: 'ইমেইল আবশ্যক!' });
+    }
+
+    // 🔍 ফেক/টেম্পোরারি ইমেইল ডোমেইন ফিল্টার
+    const disposableDomains = ['tempmail.com', '10minutemail.com', 'dispostable.com', 'guerrillamail.com'];
+    const emailDomain = email.split('@')[1]?.toLowerCase();
+    if (disposableDomains.includes(emailDomain)) {
+        return res.status(400).json({ success: false, message: 'ফেক বা টেম্পোরারি ইমেইল গ্রহণযোগ্য নয়!' });
     }
 
     try {
+        // ফরগেট পাসওয়ার্ডের ক্ষেত্রে ইমেইল ডাটাবেসে আছে কি না চেক
+        if (type === 'reset') {
+            const userCheck = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+            if (userCheck.rows.length === 0) {
+                return res.status(404).json({ success: false, message: 'এই ইমেইল দিয়ে কোনো অ্যাকাউন্ট পাওয়া যায়নি!' });
+            }
+        }
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString(); // ৬ ডিজিটের OTP
+        const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // ৫ মিনিট মেয়াদ
+
+        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
+        await pool.query('INSERT INTO email_otps (email, otp, expires_at) VALUES ($1, $2, $3)', [email, otp, expiresAt]);
+
+        const mailTitle = type === 'reset' ? 'পাসওয়ার্ড রিসেট OTP' : 'আপনার ইমেইল ভেরিফিকেশন OTP';
+        await sendOtpEmail(email, otp, mailTitle);
+
+        res.status(200).json({ success: true, message: 'ইমেইলে OTP সফলভাবে পাঠানো হয়েছে!' });
+    } catch (err) {
+        console.error('Send OTP Error:', err);
+        res.status(500).json({ success: false, message: 'OTP পাঠাতে সমস্যা হয়েছে: ' + err.message });
+    }
+});
+
+// ২. ওটিপি ভেরিফাই করে রেজিস্ট্রেশন এপিআই
+app.post('/api/register', authLimiter, async (req, res) => {
+    const { email, password, otp } = req.body;
+
+    if (!email || !password || !otp) {
+        return res.status(400).json({ success: false, message: 'ইমেইল, পাসওয়ার্ড এবং OTP আবশ্যক!' });
+    }
+
+    try {
+        // OTP ভেরিফিকেশন
+        const otpResult = await pool.query(
+            'SELECT * FROM email_otps WHERE email = $1 AND otp = $2 AND expires_at > NOW()',
+            [email, otp]
+        );
+
+        if (otpResult.rows.length === 0) {
+            return res.status(400).json({ success: false, message: 'ভুল অথবা মেয়াদোত্তীর্ণ OTP!' });
+        }
+
         const hashedPassword = await bcrypt.hash(password, 10);
         const query = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
-        const values = [email, hashedPassword];
-        const result = await pool.query(query, values);
+        const result = await pool.query(query, [email, hashedPassword]);
         
+        // ব্যবহৃত OTP ডিলিট করা
+        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
+
         const user = result.rows[0];
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
 
         res.status(201).json({
             success: true,
-            message: 'অ্যাকাউন্ট সফলভাবে তৈরি হয়েছে!',
+            message: 'অ্যাকাউন্ট ভেরিফাইড এবং সফলভাবে তৈরি হয়েছে!',
             token: token,
             user: { id: user.id, email: user.email }
         });
@@ -87,8 +168,39 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-// ২. পাসওয়ার্ড দিয়ে সাধারণ লগইন এপিআই
-app.post('/api/login', async (req, res) => {
+// 🔑 ৩. ফরগেট পাসওয়ার্ড দিয়ে নতুন পাসওয়ার্ড সেট করার এপিআই
+app.post('/api/reset-password', authLimiter, async (req, res) => {
+    const { email, otp, newPassword } = req.body;
+
+    if (!email || !otp || !newPassword) {
+        return res.status(400).json({ success: false, message: 'সবগুলো ঘর পূরণ করা আবশ্যক!' });
+    }
+
+    try {
+        // OTP চেক
+        const otpResult = await pool.query(
+            'SELECT * FROM email_otps WHERE email = $1 AND otp = $2 AND expires_at > NOW()',
+            [email, otp]
+        );
+
+        if (otpResult.rows.length === 0) {
+            return res.status(400).json({ success: false, message: 'ভুল অথবা মেয়াদোত্তীর্ণ OTP!' });
+        }
+
+        // নতুন পাসওয়ার্ড হ্যাশ করে আপডেট করা
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        await pool.query('UPDATE users SET password = $1 WHERE email = $2', [hashedPassword, email]);
+        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
+
+        res.status(200).json({ success: true, message: 'পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে! এখন নতুন পাসওয়ার্ড দিয়ে লগইন করুন।' });
+    } catch (err) {
+        console.error('Reset Password Error:', err);
+        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
+    }
+});
+
+// ৪. পাসওয়ার্ড দিয়ে সাধারণ লগইন এপিআই
+app.post('/api/login', authLimiter, async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
@@ -123,7 +235,7 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// 🌐 ৩. গুগল লগইন / রেজিস্ট্রেশন এপিআই
+// 🌐 ৫. গুগল লগইন / রেজিস্ট্রেশন এপিআই
 app.post('/api/google-login', async (req, res) => {
     const { id_token } = req.body;
 
@@ -132,7 +244,6 @@ app.post('/api/google-login', async (req, res) => {
     }
 
     try {
-        // ১. গুগল আইডি টোকেন ভেরিফাই করা
         const ticket = await googleClient.verifyIdToken({
             idToken: id_token,
             audience: GOOGLE_CLIENT_ID
@@ -145,7 +256,6 @@ app.post('/api/google-login', async (req, res) => {
             return res.status(400).json({ success: false, message: 'গুগল অ্যাকাউন্টে কোনো ইমেইল পাওয়া যায়নি!' });
         }
 
-        // ২. Neon DB-তে ইউজার চেক করা
         let query = 'SELECT * FROM users WHERE email = $1';
         let result = await pool.query(query, [email]);
 
@@ -161,7 +271,6 @@ app.post('/api/google-login', async (req, res) => {
             user = result.rows[0];
         }
 
-        // ৩. JWT টোকেন জেনারেট করা
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
 
         return res.status(200).json({
@@ -177,7 +286,7 @@ app.post('/api/google-login', async (req, res) => {
     }
 });
 
-// ৪. ফেসবুক লগইন রিডাইরেক্ট
+// ৬. ফেসবুক লগইন রিডাইরেক্ট
 app.get('/auth/facebook', (req, res) => {
     const userId = req.query.user_id;
     if (!userId) {
@@ -192,7 +301,7 @@ app.get('/auth/facebook', (req, res) => {
     res.redirect(fbLoginUrl);
 });
 
-// ৫. ফেসবুক কলব্যাক
+// ৭. ফেসবুক কলব্যাক
 app.get('/auth/facebook/callback', async (req, res) => {
     const code = req.query.code;
     const stateStr = req.query.state;
@@ -242,7 +351,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
     }
 });
 
-// 🚀 ৬. পোস্ট ডেটা সেভ করার এপিআই
+// 🚀 ৮. পোস্ট ডেটা সেভ করার এপিআই
 app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
     const userId = req.user.id;
     const { mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
@@ -390,7 +499,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
     }
 });
 
-// ৭. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক
+// ৯. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক
 app.get('/user/accounts', async (req, res) => {
     const userId = req.query.user_id;
     if (!userId) {
@@ -408,7 +517,7 @@ app.get('/user/accounts', async (req, res) => {
     }
 });
 
-// ৮. অ্যাকাউন্ট ডিসকানেক্ট
+// ১০. অ্যাকাউন্ট ডিসকানেক্ট
 app.post('/auth/disconnect', async (req, res) => {
     const { user_id, platform } = req.body;
     if (!user_id || !platform) {
@@ -429,7 +538,7 @@ app.post('/auth/disconnect', async (req, res) => {
     }
 });
 
-// 🛡️ গ্লোবাল ৪-০-৪ হ্যান্ডলার (ভুল URL-এ যেন HTML না গিয়ে সবসময় JSON ফরম্যাটে রেসপন্স যায়)
+// 🛡️ গ্লোবাল ৪-০-৪ হ্যান্ডলার
 app.use((req, res) => {
     res.status(404).json({ success: false, message: 'অনুরোধকৃত এপিআই এন্ডপয়েন্টটি পাওয়া যায়নি (404 Not Found)' });
 });
