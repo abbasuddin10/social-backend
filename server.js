@@ -13,16 +13,18 @@ const { createClient } = require('@supabase/supabase-js');
 const { OAuth2Client } = require('google-auth-library');
 
 const app = express();
-
+app.set('trust proxy', 1);
 app.use(express.json());
 app.use(cors());
 app.use('/uploads', express.static('uploads'));
 
 // 🛡️ ব্রুট-ফোর্স সিকিউরিটির জন্য Rate Limiter (১ মিনিটে সর্বোচ্চ ৫ রিকোয়েস্ট)
+
 const authLimiter = rateLimit({
-    windowMs: 1 * 60 * 1000, 
-    max: 5,
-    message: { success: false, message: 'অতিরিক্ত চেষ্টা করা হয়েছে! অনুগ্রহ করে ১ মিনিট পর আবার চেষ্টা করুন।' }
+  windowMs: 1 * 60 * 1000,
+  max: 5,
+  validate: { xForwardedForHeader: false }, // 💡 Render Proxy এরর ফিক্স করার জন্য
+  message: { success: false, message: 'অতিরিক্ত চেষ্টা করা হয়েছে! অনুগ্রহ করে ১ মিনিট পর আবার চেষ্টা করুন।' }
 });
 
 // 📧 Nodemailer সার্ভিস কনফিগারেশন (Gmail App Password দিয়ে চলবে)
