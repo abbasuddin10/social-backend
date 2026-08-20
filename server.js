@@ -376,7 +376,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
 // 🛠️ ACCOUNT MANAGEMENTS
 // ==========================================
 
-// ৭. ইউজার অ্যাকাউন্টস ও কানেক্টেড পেইজ লিস্ট (পেজের নাম সহ পাঠাবে)
+// ৭. ইউজার অ্যাকাউন্টস ও কানেক্টেড পেইজ লিস্ট
 app.get('/user/accounts', async (req, res) => {
     const userId = req.query.user_id;
 
@@ -385,7 +385,8 @@ app.get('/user/accounts', async (req, res) => {
     }
 
     try {
-        const query = 'SELECT platform, page_id, page_name FROM social_accounts WHERE user_id = $1';
+        // user_id = $1::INTEGER দিয়ে কাস্ট করা হয়েছে
+        const query = 'SELECT platform, page_id, page_name FROM social_accounts WHERE user_id = $1::INTEGER';
         const result = await pool.query(query, [userId]);
 
         res.status(200).json({
@@ -398,7 +399,7 @@ app.get('/user/accounts', async (req, res) => {
     }
 });
 
-// ৮. সোশ্যাল অ্যাকাউন্ট ডিসকানেক্ট (DELETE Query - ডাটা সরাসরি নিয়ন ডাটাবেজ থেকে মুছে ফেলবে)
+// ৮. সোশ্যাল অ্যাকাউন্ট ডিসকানেক্ট
 app.post('/auth/disconnect', async (req, res) => {
     const { user_id, platform, page_id } = req.body;
 
@@ -411,10 +412,10 @@ app.post('/auth/disconnect', async (req, res) => {
         let values = [];
 
         if (page_id) {
-            query = 'DELETE FROM social_accounts WHERE user_id = $1 AND platform = $2 AND page_id = $3';
+            query = 'DELETE FROM social_accounts WHERE user_id = $1::INTEGER AND platform = $2 AND page_id = $3';
             values = [user_id, platform.toLowerCase().trim(), page_id];
         } else {
-            query = 'DELETE FROM social_accounts WHERE user_id = $1 AND platform = $2';
+            query = 'DELETE FROM social_accounts WHERE user_id = $1::INTEGER AND platform = $2';
             values = [user_id, platform.toLowerCase().trim()];
         }
 
