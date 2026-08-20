@@ -7,79 +7,28 @@ const upload = multer({ dest: 'uploads/' });
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
-const rateLimit = require('express-rate-limit');
 const { createClient } = require('@supabase/supabase-js');
-const { OAuth2Client } = require('google-auth-library');
 
 const app = express();
-app.set('trust proxy', 1);
+
 app.use(express.json());
 app.use(cors());
 app.use('/uploads', express.static('uploads'));
 
-// 🛡️ Rate Limiter (১ মিনিটে সর্বোচ্চ ৫টি রিকোয়েস্ট)
-const authLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 5,
-  validate: { xForwardedForHeader: false },
-  message: { success: false, message: 'অতিরিক্ত চেষ্টা করা হয়েছে! অনুগ্রহ করে ১ মিনিট পর আবার চেষ্টা করুন।' }
-});
-
-// 🔍 ফেক ইমেইল ফিল্টার
-const isDisposableEmail = (email) => {
-  const disposableDomains = ['tempmail.com', '10minutemail.com', 'dispostable.com', 'guerrillamail.com', 'yopmail.com'];
-  const domain = email.split('@')[1]?.toLowerCase();
-  return disposableDomains.includes(domain);
-};
-
-// 🔐 পাসওয়ার্ড স্ট্রেন্থ চেক
-const validatePassword = (password) => {
-  if (!password || password.length < 8) {
-    return 'পাসওয়ার্ড কমপক্ষে ৮ অক্ষরের হতে হবে!';
-  }
-  if (!/[A-Z]/.test(password)) {
-    return 'পাসওয়ার্ডে অন্তত একটি বড় হাতের অক্ষর (A-Z) থাকতে হবে!';
-  }
-  if (!/[a-z]/.test(password)) {
-    return 'পাসওয়ার্ডে অন্তত একটি ছোট হাতের অক্ষর (a-z) থাকতে হবে!';
-  }
-  return null;
-};
-
-// 🤖 n8n Webhook দিয়ে OTP পাঠানোর হেলপার
-const sendOtpViaN8n = async (email, otp, title) => {
-    const n8nWebhookUrl = process.env.N8N_OTP_WEBHOOK_URL;
-    
-    if (!n8nWebhookUrl) {
-        throw new Error('n8n Webhook URL এনভায়রনমেন্ট ভ্যারিয়েবলে যুক্ত করা হয়নি!');
-    }
-
-    try {
-        await axios.post(n8nWebhookUrl, { email, otp, title });
-    } catch (error) {
-        console.error('n8n Webhook Error:', error.message);
-        throw new Error('n8n অটোমেশনের মাধ্যমে ইমেইল পাঠাতে ব্যর্থ হয়েছে');
-    }
-};
-
-// 🌐 Google Auth Client
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '910096214036-4gi7puoqg1edarqub27v7mluqqt6fht6.apps.googleusercontent.com';
-const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
-
-// 🚀 Supabase Client
+// 🚀 Supabase Client সেটআপ
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = (SUPABASE_URL && SUPABASE_KEY) ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
-// 🗄️ Neon DB Pool
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
 });
 
+// JWT Secret Key
 const JWT_SECRET = process.env.JWT_SECRET || 'your_super_secure_secret_key_123';
 
-// 🛡️ টোকেন ভেরিফিকেশন মিডলওয়্যার
+// 🛡️ মিডলওয়্যার: টোকেন ভেরিফাই করা
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -98,73 +47,29 @@ const authenticateToken = (req, res, next) => {
 };
 
 app.get('/', (req, res) => {
-    res.send('Server is running smoothly with n8n & Neon DB!');
+    res.send('Node.js Backend Server with Neon DB is running!');
 });
 
-// 📩 ১. OTP সেন্ড এপিআই
-app.post('/api/send-otp', authLimiter, async (req, res) => {
-    const { email, type } = req.body;
-
-    if (!email) {
-        return res.status(400).json({ success: false, message: 'ইমেইল আবশ্যক!' });
-    }
-
-    if (isDisposableEmail(email)) {
-        return res.status(400).json({ success: false, message: 'ফেক বা টেম্পোরারি ইমেইল গ্রহণযোগ্য নয়!' });
-    }
-
-    try {
-        if (type === 'reset') {
-            const userCheck = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-            if (userCheck.rows.length === 0) {
-                return res.status(404).json({ success: false, message: 'এই ইমেইল দিয়ে কোনো অ্যাকাউন্ট পাওয়া যায়নি!' });
-            }
-        }
-
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-
-        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
-        await pool.query('INSERT INTO email_otps (email, otp, expires_at) VALUES ($1, $2, $3)', [email, otp, expiresAt]);
-
-        const mailTitle = type === 'reset' ? 'পাসওয়ার্ড রিসেট OTP' : 'আপনার ইমেইল ভেরিফিকেশন OTP';
-        await sendOtpViaN8n(email, otp, mailTitle);
-
-        res.status(200).json({ success: true, message: 'ইমেইলে OTP সফলভাবে পাঠানো হয়েছে!' });
-    } catch (err) {
-        console.error('Send OTP Error:', err);
-        res.status(500).json({ success: false, message: err.message });
-    }
-});
-
-// 🔑 ২. রেজিস্ট্রেশন এপিআই
-app.post('/api/register', authLimiter, async (req, res) => {
+// ১. রেজিস্ট্রেশন এপিআই
+app.post('/api/register', async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
         return res.status(400).json({ success: false, message: 'ইমেইল এবং পাসওয়ার্ড আবশ্যক!' });
     }
 
-    if (isDisposableEmail(email)) {
-        return res.status(400).json({ success: false, message: 'ফেক বা টেম্পোরারি ইমেইল দিয়ে অ্যাকাউন্ট খোলা যাবে না!' });
-    }
-
-    const passwordError = validatePassword(password);
-    if (passwordError) {
-        return res.status(400).json({ success: false, message: passwordError });
-    }
-
     try {
         const hashedPassword = await bcrypt.hash(password, 10);
         const query = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
-        const result = await pool.query(query, [email, hashedPassword]);
-
+        const values = [email, hashedPassword];
+        const result = await pool.query(query, values);
+        
         const user = result.rows[0];
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
 
         res.status(201).json({
             success: true,
-            message: 'সফলভাবে অ্যাকাউন্ট তৈরি হয়েছে!',
+            message: 'অ্যাকাউন্ট সফলভাবে তৈরি হয়েছে!',
             token: token,
             user: { id: user.id, email: user.email }
         });
@@ -172,45 +77,13 @@ app.post('/api/register', authLimiter, async (req, res) => {
         if (err.code === '23505') {
             return res.status(400).json({ success: false, message: 'এই ইমেইল দিয়ে ইতোমধ্যে অ্যাকাউন্ট খোলা হয়েছে!' });
         }
+        console.error('Register Error:', err);
         res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
     }
 });
 
-// 🔄 ৩. পাসওয়ার্ড রিসেট এপিআই
-app.post('/api/reset-password', authLimiter, async (req, res) => {
-    const { email, otp, newPassword } = req.body;
-
-    if (!email || !otp || !newPassword) {
-        return res.status(400).json({ success: false, message: 'সবগুলো ঘর পূরণ করা আবশ্যক!' });
-    }
-
-    const passwordError = validatePassword(newPassword);
-    if (passwordError) {
-        return res.status(400).json({ success: false, message: passwordError });
-    }
-
-    try {
-        const otpResult = await pool.query(
-            'SELECT * FROM email_otps WHERE email = $1 AND otp = $2 AND expires_at > NOW()',
-            [email, otp]
-        );
-
-        if (otpResult.rows.length === 0) {
-            return res.status(400).json({ success: false, message: 'ভুল অথবা মেয়াদোত্তীর্ণ OTP!' });
-        }
-
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
-        await pool.query('UPDATE users SET password = $1 WHERE email = $2', [hashedPassword, email]);
-        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
-
-        res.status(200).json({ success: true, message: 'পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে! এখন লগইন করুন।' });
-    } catch (err) {
-        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
-    }
-});
-
-// 🔓 সাধারণ সরাসরি লগইন এপিআই (Neon DB-তে মিললেই ঢুকবে)
-app.post('/api/login', authLimiter, async (req, res) => {
+// ২. লগইন এপিআই
+app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
@@ -218,20 +91,19 @@ app.post('/api/login', authLimiter, async (req, res) => {
     }
 
     try {
-        // ১. Neon DB-তে ইমেইল খোঁজা
-        const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+        const query = 'SELECT * FROM users WHERE email = $1';
+        const result = await pool.query(query, [email]);
+
         if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: 'ইউজার পাওয়া যায়নি!' });
         }
 
-        // ২. পাসওয়ার্ড ম্যাচ করে দেখা
         const user = result.rows[0];
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(401).json({ success: false, message: 'পাসওয়ার্ড ভুল হয়েছে!' });
         }
 
-        // ৩. পাসওয়ার্ড মিললে সরাসরি টোকেন প্রদান ও অ্যাপে এক্সেস
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
 
         res.status(200).json({
@@ -241,61 +113,78 @@ app.post('/api/login', authLimiter, async (req, res) => {
             user: { id: user.id, email: user.email }
         });
     } catch (err) {
-        res.status(500).json({ success: false, message: err.message });
+        console.error('Login Error:', err);
+        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
     }
 });
 
-// 🌐 ৫. গুগল লগইন এপিআই
-app.post('/api/google-login', async (req, res) => {
-    const { id_token } = req.body;
+// ৩. ফেসবুক লগইন রিডাইরেক্ট
+app.get('/auth/facebook', (req, res) => {
+    const userId = req.query.user_id;
+    if (!userId) {
+        return res.status(400).send('❌ ত্রুটি: ফেসবুক কানেক্ট করার জন্য user_id পাঠানো বাধ্যতামূলক!');
+    }
 
-    if (!id_token) {
-        return res.status(400).json({ success: false, message: 'Google ID Token আবশ্যক!' });
+    const appId = process.env.FACEBOOK_APP_ID;
+    const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
+    const state = JSON.stringify({ user_id: userId });
+    
+    const fbLoginUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=pages_show_list,pages_manage_posts,pages_read_engagement`;
+    res.redirect(fbLoginUrl);
+});
+
+// ৪. ফেসবুক কলব্যাক
+app.get('/auth/facebook/callback', async (req, res) => {
+    const code = req.query.code;
+    const stateStr = req.query.state;
+    
+    let userId = null;
+    try {
+        if (stateStr) {
+            const parsedState = JSON.parse(stateStr);
+            userId = parsedState.user_id;
+        }
+    } catch (e) {
+        console.error("State parse error:", e);
+    }
+
+    if (!code || !userId) {
+        return res.status(400).send('❌ ত্রুটি: অথেন্টিকেশন কোড বা ইউজার আইডি পাওয়া যায়নি।');
     }
 
     try {
-        const ticket = await googleClient.verifyIdToken({
-            idToken: id_token,
-            audience: GOOGLE_CLIENT_ID
-        });
+        const appId = process.env.FACEBOOK_APP_ID;
+        const appSecret = process.env.FACEBOOK_APP_SECRET;
+        const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
 
-        const payload = ticket.getPayload();
-        const { email, sub: googleId } = payload;
+        const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
+        const tokenResponse = await axios.get(tokenUrl);
+        const shortLivedToken = tokenResponse.data.access_token;
 
-        if (!email) {
-            return res.status(400).json({ success: false, message: 'গুগল অ্যাকাউন্টে কোনো ইমেইল পাওয়া যায়নি!' });
+        const longLivedUrl = `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken}`;
+        const longLivedResponse = await axios.get(longLivedUrl);
+        const longLivedAccessToken = longLivedResponse.data.access_token;
+
+        const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${longLivedAccessToken}`;
+        const pagesResponse = await axios.get(pagesUrl);
+        const pages = pagesResponse.data.data;
+
+        for (const page of pages) {
+            // 🎯 আগের কোনো রেকর্ড থাকলে রিমুভ করে নতুন তাজা একসেস টোকেন সেভ করা
+            await pool.query('DELETE FROM social_accounts WHERE user_id = $1 AND platform = $2', [userId, 'facebook']);
+
+            const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5)';
+            await pool.query(insertQuery, [userId, page.id, page.access_token, true, 'facebook']);
         }
 
-        let result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-        let user;
-
-        if (result.rows.length === 0) {
-            const dummyPasswordHash = await bcrypt.hash(googleId + '_google_secret', 10);
-            const insertResult = await pool.query(
-                'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at',
-                [email, dummyPasswordHash]
-            );
-            user = insertResult.rows[0];
-        } else {
-            user = result.rows[0];
-        }
-
-        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
-
-        return res.status(200).json({
-            success: true,
-            message: 'গুগল দিয়ে সফলভাবে লগইন হয়েছে!',
-            token: token,
-            user: { id: user.id, email: user.email }
-        });
-
-    } catch (err) {
-        console.error('Google Auth Error:', err.message);
-        return res.status(400).json({ success: false, message: 'গুগল অথেন্টিকেশন ব্যর্থ হয়েছে: ' + err.message });
+        res.send(`<html><body style="font-family: Arial; text-align: center; padding: 50px;"><h2>🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2><p>ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p></body></html>`);
+    } catch (error) {
+        console.error("Facebook Auth Error:", error.response?.data || error.message);
+        res.status(500).send('Authentication failed!');
     }
 });
 
-// 🚀 ৬. পোস্ট সেভ এপিআই
+// 🚀 ৫. পোস্ট ডেটা সেভ করার আপডেট এপিআই (SCHEDULE MULTI-IMAGE CONSECUTIVE DAYS SUPPORT)
 app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
     const userId = req.user.id;
     const { mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
@@ -308,6 +197,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
 
     const files = req.files || [];
 
+    // Helper: Supabase/Local Upload Logic
     const uploadSingleFile = async (file) => {
         try {
             if (supabase) {
@@ -323,6 +213,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
                     });
 
                 if (error) {
+                    console.error('Supabase Upload Error:', error.message);
                     return `https://${req.get('host')}/uploads/${file.filename}`;
                 } else {
                     const { data: publicUrlData } = supabase.storage
@@ -334,53 +225,114 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
                 return `https://${req.get('host')}/uploads/${file.filename}`;
             }
         } catch (uploadErr) {
+            console.error('File Upload Error:', uploadErr.message);
             return `https://${req.get('host')}/uploads/${file.filename}`;
         } finally {
             try {
                 if (fs.existsSync(file.path)) {
                     fs.unlinkSync(file.path);
                 }
-            } catch (unlinkErr) {}
+            } catch (unlinkErr) {
+                console.error('Unlink Error:', unlinkErr.message);
+            }
         }
     };
 
     try {
-        const imagePaths = [];
-        for (const file of files) {
-            const url = await uploadSingleFile(file);
-            imagePaths.push(url);
-        }
+        // CASE A: SCHEDULE MODE (প্রতিটি ছবির জন্য আলাদা দিনে ১টি করে পোস্ট তৈরি হবে)
+        if (mode === 'schedule') {
+            const baseDate = schedule_time ? new Date(schedule_time) : new Date();
+            const savedPosts = [];
 
-        const query = `
-            INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
-            VALUES ($1, $2, $3, $4, $5, $6) 
-            RETURNING *;
-        `;
-        const values = [
-            userId,
-            mode,
-            content,
-            JSON.stringify(platforms),
-            schedule_time ? new Date(schedule_time).toISOString() : null,
-            imagePaths
-        ];
+            if (files.length > 0) {
+                for (let i = 0; i < files.length; i++) {
+                    const imageUrl = await uploadSingleFile(files[i]);
 
-        const result = await pool.query(query, values);
-        const savedPost = result.rows[0];
+                    // ১ম পোস্ট নির্বাচিত দিনে, ২য় পোস্ট ১ম দিনের ১ দিন পর, ইত্যাদি
+                    const postScheduleDate = new Date(baseDate.getTime() + (i * 24 * 60 * 60 * 1000));
 
-        if (process.env.N8N_WEBHOOK_URL) {
-            try {
-                await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
-            } catch (n8nError) {
-                console.error('n8n-এ পোস্ট পাঠাতে সমস্যা:', n8nError.message);
+                    const query = `
+                        INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
+                        VALUES ($1, $2, $3, $4, $5, $6) 
+                        RETURNING *;
+                    `;
+                    const values = [
+                        userId,
+                        'schedule',
+                        content,
+                        JSON.stringify(platforms),
+                        postScheduleDate.toISOString(),
+                        [imageUrl]
+                    ];
+
+                    const result = await pool.query(query, values);
+                    savedPosts.push(result.rows[0]);
+                }
+            } else {
+                // ছবি ছাড়া কেবল প্রম্পট শিডিউল করা হলে
+                const query = `
+                    INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
+                    VALUES ($1, $2, $3, $4, $5, $6) 
+                    RETURNING *;
+                `;
+                const values = [
+                    userId,
+                    'schedule',
+                    content,
+                    JSON.stringify(platforms),
+                    baseDate.toISOString(),
+                    []
+                ];
+                const result = await pool.query(query, values);
+                savedPosts.push(result.rows[0]);
             }
-        }
 
-        return res.status(201).json({
-            success: true,
-            message: 'পোস্ট সফলভাবে সেভ ও n8n-এ ফরওয়ার্ড হয়েছে!',
-            post: savedPost
-        });
+            return res.status(201).json({
+                success: true,
+                message: `${savedPosts.length} days of scheduled posts saved successfully!`,
+                posts: savedPosts
+            });
+        } 
+        
+        // CASE B: INSTANT POST (manual / ai_agent)
+        else {
+            const imagePaths = [];
+            for (const file of files) {
+                const url = await uploadSingleFile(file);
+                imagePaths.push(url);
+            }
+
+            const query = `
+                INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
+                VALUES ($1, $2, $3, $4, $5, $6) 
+                RETURNING *;
+            `;
+            const values = [
+                userId,
+                mode,
+                content,
+                JSON.stringify(platforms),
+                null,
+                imagePaths
+            ];
+
+            const result = await pool.query(query, values);
+            const savedPost = result.rows[0];
+
+            if (process.env.N8N_WEBHOOK_URL) {
+                try {
+                    await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
+                } catch (n8nError) {
+                    console.error('Forwarding to n8n failed:', n8nError.message);
+                }
+            }
+
+            return res.status(201).json({
+                success: true,
+                message: 'Post created successfully!',
+                post: savedPost
+            });
+        }
 
     } catch (error) {
         console.error('Save Post Error:', error.message);
@@ -388,11 +340,48 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
     }
 });
 
-app.use((req, res) => {
-    res.status(404).json({ success: false, message: 'এপিআই এন্ডপয়েন্ট পাওয়া যায়নি (404 Not Found)' });
+// ৬. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক
+app.get('/user/accounts', async (req, res) => {
+    const userId = req.query.user_id;
+    if (!userId) {
+        return res.status(400).json({ success: false, message: 'user_id আবশ্যক!' });
+    }
+
+    try {
+        const query = 'SELECT platform FROM social_accounts WHERE user_id = $1 AND is_active = true';
+        const result = await pool.query(query, [userId]);
+        
+        const platforms = result.rows.map(row => row.platform.toLowerCase().trim());
+        res.status(200).json(platforms);
+    } catch (err) {
+        console.error('Fetch Accounts Error:', err);
+        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
+    }
+});
+
+// ৭. অ্যাকাউন্ট ডিসকানেক্ট (ডাটাবেস থেকে সম্পূর্ণ রিমুভ)
+app.post('/auth/disconnect', async (req, res) => {
+    const { user_id, platform } = req.body;
+    if (!user_id || !platform) {
+        return res.status(400).json({ success: false, message: 'user_id এবং platform আবশ্যক!' });
+    }
+
+    try {
+        // 🎯 is_active = false করার বদলে ডাটাবেস থেকে রিমুভ করা হচ্ছে
+        const query = 'DELETE FROM social_accounts WHERE user_id = $1 AND platform = $2';
+        await pool.query(query, [user_id, platform.toLowerCase().trim()]);
+
+        res.status(200).json({ 
+            success: true, 
+            message: `${platform} সফলভাবে ডিসকানেক্ট ও ডাটাবেস থেকে রিমুভ করা হয়েছে।` 
+        });
+    } catch (err) {
+        console.error('Disconnect Error:', err);
+        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
+    }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`সার্ভার পোর্ট ${PORT}-এ রান হচ্ছে!`);
+    console.log(`সার্ভার সফলভাবে পোর্ট ${PORT}-এ রান হচ্ছে!`);
 });
