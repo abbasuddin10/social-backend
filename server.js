@@ -8,6 +8,7 @@ const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
+const { OAuth2Client } = require('google-auth-library'); // 🎯 Google Auth
 
 const app = express();
 
@@ -15,7 +16,9 @@ app.use(express.json());
 app.use(cors());
 app.use('/uploads', express.static('uploads'));
 
-// 🚀 Supabase Client সেটআপ
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+// 🚀 Supabase Client
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = (SUPABASE_URL && SUPABASE_KEY) ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
@@ -26,10 +29,8 @@ const pool = new Pool({
     ssl: { rejectUnauthorized: false }
 });
 
-// JWT Secret Key
 const JWT_SECRET = process.env.JWT_SECRET || 'your_super_secure_secret_key_123';
 
-// 🛡️ মিডলওয়্যার: টোকেন ভেরিফাই করা
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -123,11 +124,154 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
+// 🌐 ৩. গুগল লগইন এপিআই (FIXED)
+app.post('/api/google-login', async (req, res) => {
+    const { id_token } = req.body;
+
+    if (!id_token) {
+        return res.status(400).json({ success: false, message: 'Google Token আবশ্যক!' });
+    }
+
+    try {
+        const ticket = await googleClient.verifyIdToken({
+            idToken: id_token,
+            audience: process.env.GOOGLE_CLIENT_ID,
+        });
+
+        const payload = ticket.getPayload();
+        const email = payload.email;
+
+        // নিয়ন ডাটাবেসে ইউজার চেক বা তৈরি
+        let query = 'SELECT * FROM users WHERE email = $1';
+        let result = await pool.query(query, [email]);
+        let user;
+
+        if (result.rows.length === 0) {
+            const insertQuery = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email';
+            const randomPassword = await bcrypt.hash(Math.random().toString(36), 10);
+            const insertResult = await pool.query(insertQuery, [email, randomPassword]);
+            user = insertResult.rows[0];
+        } else {
+            user = result.rows[0];
+        }
+
+        const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
+
+        res.status(200).json({
+            success: true,
+            message: 'Google দিয়ে লগইন সফল হয়েছে!',
+            token: token,
+            user: { id: user.id, email: user.email }
+        });
+    } catch (err) {
+        console.error('Google Login Error:', err);
+        res.status(500).json({ success: false, message: 'গুগল ভেরিফিকেশন ব্যর্থ হয়েছে: ' + err.message });
+    }
+});
+
+// 📩 ৪. পাসওয়ার্ড রিসেটের জন্য OTP তৈরি এপিআই (email_otps টেবিলে সেভ হবে)
+app.post('/api/send-otp', async (req, res) => {
+    const { email } = req.body;
+
+    if (!email) {
+        return res.status(400).json({ success: false, message: 'ইমেইল আবশ্যক!' });
+    }
+
+    try {
+        // ইউজার ডাটাবেজে আছে কিনা চেক
+        const userQuery = 'SELECT * FROM users WHERE email = $1';
+        const userRes = await pool.query(userQuery, [email]);
+
+        if (userRes.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'এই ইমেইলে কোনো অ্যাকাউন্ট পাওয়া যায়নি!' });
+        }
+
+        // ৬ ডিজিট OTP জেনারেট
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+        // email_otps টেবিলে পুরাতন OTP থাকলে ডিলিট করে নতুনটা ইনসার্ট করা
+        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
+        
+        const insertOtpQuery = 'INSERT INTO email_otps (email, otp_code) VALUES ($1, $2)';
+        await pool.query(insertOtpQuery, [email, otp]);
+
+        res.status(200).json({
+            success: true,
+            message: 'OTP তৈরি হয়েছে! n8n এর মাধ্যমে ইমেইল পাঠানো হচ্ছে।'
+        });
+    } catch (err) {
+        console.error('Send OTP Error:', err);
+        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
+    }
+});
+
+// 🔓 ৫. পাসওয়ার্ড রিসেট ভেরিফাই ও আপডেট (email_otps টেবিল থেকে চেক)
+app.post('/api/reset-password', async (req, res) => {
+    const { email, otp, newPassword } = req.body;
+
+    if (!email || !otp || !newPassword) {
+        return res.status(400).json({ success: false, message: 'সবগুলো ঘর পূরণ করুন!' });
+    }
+
+    try {
+        // email_otps টেবিলে OTP মেলানো
+        const query = 'SELECT * FROM email_otps WHERE email = $1 AND otp_code = $2';
+        const result = await pool.query(query, [email, otp]);
+
+        if (result.rows.length === 0) {
+            return res.status(400).json({ success: false, message: 'ভুল বা মেয়াদোত্তীর্ণ OTP কোড!' });
+        }
+
+        // পাসওয়ার্ড হ্যাশ করে users টেবিলে আপডেট
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        await pool.query('UPDATE users SET password = $1 WHERE email = $2', [hashedPassword, email]);
+
+        // কাজ শেষ হলে ব্যবহৃত OTP মুছে ফেলা
+        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
+
+        res.status(200).json({
+            success: true,
+            message: 'পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে!'
+        });
+    } catch (err) {
+        console.error('Reset Password Error:', err);
+        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
+    }
+});
+
+// 🔓 ৫. পাসওয়ার্ড রিসেট ভেরিফাই ও আপডেট
+app.post('/api/reset-password', async (req, res) => {
+    const { email, otp, newPassword } = req.body;
+
+    if (!email || !otp || !newPassword) {
+        return res.status(400).json({ success: false, message: 'সবগুলো ঘর পূরণ করুন!' });
+    }
+
+    try {
+        const query = 'SELECT * FROM users WHERE email = $1 AND otp_code = $2';
+        const result = await pool.query(query, [email, otp]);
+
+        if (result.rows.length === 0) {
+            return res.status(400).json({ success: false, message: 'ভুল OTP কোড!' });
+        }
+
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        const updateQuery = 'UPDATE users SET password = $1, otp_code = NULL WHERE email = $2';
+        await pool.query(updateQuery, [hashedPassword, email]);
+
+        res.status(200).json({
+            success: true,
+            message: 'পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে!'
+        });
+    } catch (err) {
+        console.error('Reset Password Error:', err);
+        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
+    }
+});
+
 // ==========================================
 // 📘 FACEBOOK AUTH ROUTES
 // ==========================================
-
-// ৩. ফেসবুক লগইন রিডাইরেক্ট
 app.get('/auth/facebook', (req, res) => {
     const userId = req.query.user_id;
 
@@ -143,7 +287,6 @@ app.get('/auth/facebook', (req, res) => {
     res.redirect(fbLoginUrl);
 });
 
-// ৪. ফেসবুক কলব্যাক (Page Name সহ সেভ করার জন্য আপডেট করা হয়েছে)
 app.get('/auth/facebook/callback', async (req, res) => {
     const code = req.query.code;
     const stateStr = req.query.state;
@@ -199,7 +342,6 @@ app.get('/auth/facebook/callback', async (req, res) => {
     }
 });
 
-// ৫. সরাসরি ফেসবুক পেজে পোস্ট করার এপিআই
 app.post('/api/post-to-facebook', authenticateToken, async (req, res) => {
     const { page_id, message } = req.body;
     const userId = req.user.id;
@@ -266,7 +408,6 @@ const uploadSingleFile = async (file, userId, reqHost) => {
     }
 };
 
-// ৬. পোস্ট সেভ / শিডিউল এপিআই
 app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
     const userId = req.user.id;
     const { mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
@@ -376,7 +517,6 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
 // 🛠️ ACCOUNT MANAGEMENTS
 // ==========================================
 
-// ৭. ইউজার অ্যাকাউন্টস ও কানেক্টেড পেইজ লিস্ট
 app.get('/user/accounts', async (req, res) => {
     const userId = req.query.user_id;
 
@@ -385,7 +525,6 @@ app.get('/user/accounts', async (req, res) => {
     }
 
     try {
-        // user_id = $1::INTEGER দিয়ে কাস্ট করা হয়েছে
         const query = 'SELECT platform, page_id, page_name FROM social_accounts WHERE user_id = $1::INTEGER';
         const result = await pool.query(query, [userId]);
 
@@ -399,7 +538,6 @@ app.get('/user/accounts', async (req, res) => {
     }
 });
 
-// ৮. সোশ্যাল অ্যাকাউন্ট ডিসকানেক্ট
 app.post('/auth/disconnect', async (req, res) => {
     const { user_id, platform, page_id } = req.body;
 
