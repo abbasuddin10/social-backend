@@ -32,7 +32,7 @@ const isDisposableEmail = (email) => {
   return disposableDomains.includes(domain);
 };
 
-// 🔐 পাসওয়ার্ড স্ট্রেন্থ চেক (৮ ক্যারেক্টার + ১টি বড় হাতের + ১টি ছোট হাতের অক্ষর)
+// 🔐 পাসওয়ার্ড স্ট্রেন্থ চেক
 const validatePassword = (password) => {
   if (!password || password.length < 8) {
     return 'পাসওয়ার্ড কমপক্ষে ৮ অক্ষরের হতে হবে!';
@@ -55,11 +55,7 @@ const sendOtpViaN8n = async (email, otp, title) => {
     }
 
     try {
-        await axios.post(n8nWebhookUrl, {
-            email: email,
-            otp: otp,
-            title: title
-        });
+        await axios.post(n8nWebhookUrl, { email, otp, title });
     } catch (error) {
         console.error('n8n Webhook Error:', error.message);
         throw new Error('n8n অটোমেশনের মাধ্যমে ইমেইল পাঠাতে ব্যর্থ হয়েছে');
@@ -105,7 +101,7 @@ app.get('/', (req, res) => {
     res.send('Server is running smoothly with n8n & Neon DB!');
 });
 
-// 📩 ১. OTP সেন্ড করার এপিআই
+// 📩 ১. OTP সেন্ড এপিআই
 app.post('/api/send-otp', authLimiter, async (req, res) => {
     const { email, type } = req.body;
 
@@ -213,7 +209,7 @@ app.post('/api/reset-password', authLimiter, async (req, res) => {
     }
 });
 
-// 🔓 ৪. লগইন এপিআই (ধাপ ১)
+// 🔓 সাধারণ সরাসরি লগইন এপিআই (Neon DB-তে মিললেই ঢুকবে)
 app.post('/api/login', authLimiter, async (req, res) => {
     const { email, password } = req.body;
 
@@ -222,58 +218,20 @@ app.post('/api/login', authLimiter, async (req, res) => {
     }
 
     try {
+        // ১. Neon DB-তে ইমেইল খোঁজা
         const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
         if (result.rows.length === 0) {
             return res.status(404).json({ success: false, message: 'ইউজার পাওয়া যায়নি!' });
         }
 
+        // ২. পাসওয়ার্ড ম্যাচ করে দেখা
         const user = result.rows[0];
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(401).json({ success: false, message: 'পাসওয়ার্ড ভুল হয়েছে!' });
         }
 
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
-
-        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
-        await pool.query('INSERT INTO email_otps (email, otp, expires_at) VALUES ($1, $2, $3)', [email, otp, expiresAt]);
-
-        await sendOtpViaN8n(email, otp, 'আপনার লগইন ভেরিফিকেশন OTP');
-
-        res.status(200).json({
-            success: true,
-            requiresOtp: true,
-            message: 'পাসওয়ার্ড সঠিক! আপনার ইমেইলে OTP পাঠানো হয়েছে।'
-        });
-    } catch (err) {
-        res.status(500).json({ success: false, message: err.message });
-    }
-});
-
-// 🔓 ৪. লগইন OTP ভেরিফাই (ধাপ ২)
-app.post('/api/login-verify-otp', authLimiter, async (req, res) => {
-    const { email, otp } = req.body;
-
-    if (!email || !otp) {
-        return res.status(400).json({ success: false, message: 'ইমেইল এবং OTP আবশ্যক!' });
-    }
-
-    try {
-        const otpResult = await pool.query(
-            'SELECT * FROM email_otps WHERE email = $1 AND otp = $2 AND expires_at > NOW()',
-            [email, otp]
-        );
-
-        if (otpResult.rows.length === 0) {
-            return res.status(400).json({ success: false, message: 'ভুল অথবা মেয়াদোত্তীর্ণ OTP!' });
-        }
-
-        const userResult = await pool.query('SELECT id, email FROM users WHERE email = $1', [email]);
-        const user = userResult.rows[0];
-
-        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
-
+        // ৩. পাসওয়ার্ড মিললে সরাসরি টোকেন প্রদান ও অ্যাপে এক্সেস
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
 
         res.status(200).json({
@@ -283,7 +241,7 @@ app.post('/api/login-verify-otp', authLimiter, async (req, res) => {
             user: { id: user.id, email: user.email }
         });
     } catch (err) {
-        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
@@ -337,7 +295,7 @@ app.post('/api/google-login', async (req, res) => {
     }
 });
 
-// 🚀 ৬. পোস্ট সেভ এবং n8n পোস্ট সোশ্যাল মিডিয়া ট্র্রিগার (সম্পূর্ণ ইমেজ আপলোডসহ)
+// 🚀 ৬. পোস্ট সেভ এপিআই
 app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
     const userId = req.user.id;
     const { mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
@@ -430,7 +388,6 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
     }
 });
 
-// 🛡️ ৪-০-৪ হ্যান্ডলার
 app.use((req, res) => {
     res.status(404).json({ success: false, message: 'এপিআই এন্ডপয়েন্ট পাওয়া যায়নি (404 Not Found)' });
 });
