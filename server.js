@@ -143,7 +143,7 @@ app.get('/auth/facebook', (req, res) => {
     res.redirect(fbLoginUrl);
 });
 
-// ৪. ফেসবুক কলব্যাক
+// ৪. ফেসবুক কলব্যাক (Page Name সহ সেভ করার জন্য আপডেট করা হয়েছে)
 app.get('/auth/facebook/callback', async (req, res) => {
     const code = req.query.code;
     const stateStr = req.query.state;
@@ -184,11 +184,11 @@ app.get('/auth/facebook/callback', async (req, res) => {
             const existing = await pool.query(checkQuery, [page.id, userId]);
 
             if (existing.rows.length > 0) {
-                const updateQuery = 'UPDATE social_accounts SET access_token = $2, is_active = TRUE, updated_at = NOW() WHERE page_id = $1 AND user_id = $3';
-                await pool.query(updateQuery, [page.id, page.access_token, userId]);
+                const updateQuery = 'UPDATE social_accounts SET access_token = $2, page_name = $3, is_active = TRUE, updated_at = NOW() WHERE page_id = $1 AND user_id = $4';
+                await pool.query(updateQuery, [page.id, page.access_token, page.name, userId]);
             } else {
-                const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5)';
-                await pool.query(insertQuery, [userId, page.id, page.access_token, true, 'facebook']);
+                const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, page_name, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5, $6)';
+                await pool.query(insertQuery, [userId, page.id, page.name, page.access_token, true, 'facebook']);
             }
         }
 
@@ -226,7 +226,6 @@ app.post('/api/post-to-facebook', authenticateToken, async (req, res) => {
 // 🚀 POST SAVING & SCHEDULING (WITH SUPABASE)
 // ==========================================
 
-// Helper: ফাইল আপলোড হ্যান্ডলার (Supabase অথবা Local Upload)
 const uploadSingleFile = async (file, userId, reqHost) => {
     try {
         if (supabase) {
@@ -280,7 +279,6 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
     };
 
     try {
-        // CASE A: SCHEDULE MODE (প্রতিটি ছবির জন্য ১টি করে পোস্ট একাধিক দিনে শিডিউল হবে)
         if (mode === 'schedule') {
             const baseDate = schedule_time ? new Date(schedule_time) : new Date();
             const savedPosts = [];
@@ -308,7 +306,6 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
                     savedPosts.push(result.rows[0]);
                 }
             } else {
-                // ছবি ছাড়া কেবল কনটেন্ট শিডিউল করা হলে
                 const query = `
                     INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
                     VALUES ($1, $2, $3, $4, $5, $6) 
@@ -331,9 +328,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
                 message: `${savedPosts.length} days of scheduled posts saved successfully!`,
                 posts: savedPosts
             });
-        } 
-        // CASE B: INSTANT POST (manual / ai_agent)
-        else {
+        } else {
             const imagePaths = [];
             for (const file of files) {
                 const url = await uploadSingleFile(file, userId, req.get('host'));
@@ -355,9 +350,8 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
             ];
 
             const result = await pool.query(query, values);
-                const savedPost = result.rows[0];
+            const savedPost = result.rows[0];
 
-            // n8n Webhook-এ ফরওয়ার্ড করা (যদি এনভায়রনমেন্ট ভ্যারিয়েবল সেট থাকে)
             if (process.env.N8N_WEBHOOK_URL) {
                 try {
                     await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
@@ -382,7 +376,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
 // 🛠️ ACCOUNT MANAGEMENTS
 // ==========================================
 
-// ৭. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক
+// ৭. ইউজার অ্যাকাউন্টস ও কানেক্টেড পেইজ লিস্ট (পেজের নাম সহ পাঠাবে)
 app.get('/user/accounts', async (req, res) => {
     const userId = req.query.user_id;
 
@@ -391,32 +385,44 @@ app.get('/user/accounts', async (req, res) => {
     }
 
     try {
-        const query = 'SELECT platform FROM social_accounts WHERE user_id = $1 AND is_active = true';
+        const query = 'SELECT platform, page_id, page_name FROM social_accounts WHERE user_id = $1';
         const result = await pool.query(query, [userId]);
 
-        const platforms = result.rows.map(row => row.platform.toLowerCase().trim());
-        res.status(200).json(platforms);
+        res.status(200).json({
+            success: true,
+            accounts: result.rows
+        });
     } catch (err) {
         console.error('Fetch Accounts Error:', err);
         res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
     }
 });
 
-// ৮. সোশ্যাল অ্যাকাউন্ট ডিসকানেক্ট
+// ৮. সোশ্যাল অ্যাকাউন্ট ডিসকানেক্ট (DELETE Query - ডাটা সরাসরি নিয়ন ডাটাবেজ থেকে মুছে ফেলবে)
 app.post('/auth/disconnect', async (req, res) => {
-    const { user_id, platform } = req.body;
+    const { user_id, platform, page_id } = req.body;
 
     if (!user_id || !platform) {
         return res.status(400).json({ success: false, message: 'user_id এবং platform আবশ্যক!' });
     }
 
     try {
-        const query = 'UPDATE social_accounts SET is_active = false, access_token = null, updated_at = NOW() WHERE user_id = $1 AND platform = $2';
-        await pool.query(query, [user_id, platform.toLowerCase().trim()]);
+        let query = '';
+        let values = [];
+
+        if (page_id) {
+            query = 'DELETE FROM social_accounts WHERE user_id = $1 AND platform = $2 AND page_id = $3';
+            values = [user_id, platform.toLowerCase().trim(), page_id];
+        } else {
+            query = 'DELETE FROM social_accounts WHERE user_id = $1 AND platform = $2';
+            values = [user_id, platform.toLowerCase().trim()];
+        }
+
+        await pool.query(query, values);
 
         res.status(200).json({ 
             success: true, 
-            message: `${platform} সফলভাবে ডিসকানেক্ট করা হয়েছে।` 
+            message: `${platform} সফলভাবে নিয়ন ডাটাবেজ থেকে মুছে ফেলা হয়েছে।` 
         });
     } catch (err) {
         console.error('Disconnect Error:', err);
