@@ -168,7 +168,6 @@ app.post('/api/google-login', async (req, res) => {
         res.status(500).json({ success: false, message: 'গুগল ভেরিফিকেশন ব্যর্থ হয়েছে: ' + err.message });
     }
 });
-
 // 📩 ৪. পাসওয়ার্ড রিসেটের জন্য OTP তৈরি এপিআই (email_otps টেবিলে সেভ হবে)
 app.post('/api/send-otp', async (req, res) => {
     const { email } = req.body;
@@ -178,7 +177,7 @@ app.post('/api/send-otp', async (req, res) => {
     }
 
     try {
-        // ইউজার ডাটাবেজে আছে কিনা চেক
+        // ১. ইউজার ডাটাবেজে আছে কিনা চেক
         const userQuery = 'SELECT * FROM users WHERE email = $1';
         const userRes = await pool.query(userQuery, [email]);
 
@@ -186,55 +185,25 @@ app.post('/api/send-otp', async (req, res) => {
             return res.status(404).json({ success: false, message: 'এই ইমেইলে কোনো অ্যাকাউন্ট পাওয়া যায়নি!' });
         }
 
-        // ৬ ডিজিট OTP জেনারেট
+        // ২. ৬ ডিজিটের OTP এবং ৫ মিনিটের মেয়াদ (expires_at) জেনারেট
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // ৫ মিনিট পর এক্সপায়ার হবে
 
-        // email_otps টেবিলে পুরাতন OTP থাকলে ডিলিট করে নতুনটা ইনসার্ট করা
+        // ৩. পুরাতন OTP থাকলে মুছে ফেলে নতুনটা ইনসার্ট করা
         await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
         
-        const insertOtpQuery = 'INSERT INTO email_otps (email, otp_code) VALUES ($1, $2)';
-        await pool.query(insertOtpQuery, [email, otp]);
+        const insertOtpQuery = `
+            INSERT INTO email_otps (email, otp, expires_at, created_at) 
+            VALUES ($1, $2, $3, NOW())
+        `;
+        await pool.query(insertOtpQuery, [email, otp, expiresAt]);
 
         res.status(200).json({
             success: true,
-            message: 'OTP তৈরি হয়েছে! n8n এর মাধ্যমে ইমেইল পাঠানো হচ্ছে।'
+            message: 'OTP সফলভাবে তৈরি হয়েছে! ইমেইল পাঠানো হচ্ছে...'
         });
     } catch (err) {
         console.error('Send OTP Error:', err);
-        res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
-    }
-});
-
-// 🔓 ৫. পাসওয়ার্ড রিসেট ভেরিফাই ও আপডেট (email_otps টেবিল থেকে চেক)
-app.post('/api/reset-password', async (req, res) => {
-    const { email, otp, newPassword } = req.body;
-
-    if (!email || !otp || !newPassword) {
-        return res.status(400).json({ success: false, message: 'সবগুলো ঘর পূরণ করুন!' });
-    }
-
-    try {
-        // email_otps টেবিলে OTP মেলানো
-        const query = 'SELECT * FROM email_otps WHERE email = $1 AND otp_code = $2';
-        const result = await pool.query(query, [email, otp]);
-
-        if (result.rows.length === 0) {
-            return res.status(400).json({ success: false, message: 'ভুল বা মেয়াদোত্তীর্ণ OTP কোড!' });
-        }
-
-        // পাসওয়ার্ড হ্যাশ করে users টেবিলে আপডেট
-        const hashedPassword = await bcrypt.hash(newPassword, 10);
-        await pool.query('UPDATE users SET password = $1 WHERE email = $2', [hashedPassword, email]);
-
-        // কাজ শেষ হলে ব্যবহৃত OTP মুছে ফেলা
-        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
-
-        res.status(200).json({
-            success: true,
-            message: 'পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে!'
-        });
-    } catch (err) {
-        console.error('Reset Password Error:', err);
         res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
     }
 });
@@ -248,16 +217,20 @@ app.post('/api/reset-password', async (req, res) => {
     }
 
     try {
-        const query = 'SELECT * FROM users WHERE email = $1 AND otp_code = $2';
+        // ১. OTP এবং মেয়াদ (expires_at) দুইটাই চেক করা
+        const query = 'SELECT * FROM email_otps WHERE email = $1 AND otp = $2 AND expires_at > NOW()';
         const result = await pool.query(query, [email, otp]);
 
         if (result.rows.length === 0) {
-            return res.status(400).json({ success: false, message: 'ভুল OTP কোড!' });
+            return res.status(400).json({ success: false, message: 'ভুল বা মেয়াদোত্তীর্ণ OTP কোড!' });
         }
 
+        // ২. নতুন পাসওয়ার্ড হ্যাশ করে users টেবিলে আপডেট
         const hashedPassword = await bcrypt.hash(newPassword, 10);
-        const updateQuery = 'UPDATE users SET password = $1, otp_code = NULL WHERE email = $2';
-        await pool.query(updateQuery, [hashedPassword, email]);
+        await pool.query('UPDATE users SET password = $1 WHERE email = $2', [hashedPassword, email]);
+
+        // ৩. কাজ শেষ, ব্যবহৃত OTP টেবিল থেকে মুছে ফেলা
+        await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
 
         res.status(200).json({
             success: true,
