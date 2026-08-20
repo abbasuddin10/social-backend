@@ -20,6 +20,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = (SUPABASE_URL && SUPABASE_KEY) ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
+// 🗄️ Neon Postgres Pool
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
@@ -50,6 +51,10 @@ app.get('/', (req, res) => {
     res.send('Node.js Backend Server with Neon DB is running!');
 });
 
+// ==========================================
+// 🔑 AUTHENTICATION ROUTES
+// ==========================================
+
 // ১. রেজিস্ট্রেশন এপিআই
 app.post('/api/register', async (req, res) => {
     const { email, password } = req.body;
@@ -63,7 +68,7 @@ app.post('/api/register', async (req, res) => {
         const query = 'INSERT INTO users (email, password) VALUES ($1, $2) RETURNING id, email, created_at';
         const values = [email, hashedPassword];
         const result = await pool.query(query, values);
-        
+
         const user = result.rows[0];
         const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '365d' });
 
@@ -118,9 +123,14 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
+// ==========================================
+// 📘 FACEBOOK AUTH ROUTES
+// ==========================================
+
 // ৩. ফেসবুক লগইন রিডাইরেক্ট
 app.get('/auth/facebook', (req, res) => {
     const userId = req.query.user_id;
+
     if (!userId) {
         return res.status(400).send('❌ ত্রুটি: ফেসবুক কানেক্ট করার জন্য user_id পাঠানো বাধ্যতামূলক!');
     }
@@ -128,7 +138,7 @@ app.get('/auth/facebook', (req, res) => {
     const appId = process.env.FACEBOOK_APP_ID;
     const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
     const state = JSON.stringify({ user_id: userId });
-    
+
     const fbLoginUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=pages_show_list,pages_manage_posts,pages_read_engagement`;
     res.redirect(fbLoginUrl);
 });
@@ -137,7 +147,7 @@ app.get('/auth/facebook', (req, res) => {
 app.get('/auth/facebook/callback', async (req, res) => {
     const code = req.query.code;
     const stateStr = req.query.state;
-    
+
     let userId = null;
     try {
         if (stateStr) {
@@ -170,11 +180,16 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const pages = pagesResponse.data.data;
 
         for (const page of pages) {
-            // 🎯 আগের কোনো রেকর্ড থাকলে রিমুভ করে নতুন তাজা একসেস টোকেন সেভ করা
-            await pool.query('DELETE FROM social_accounts WHERE user_id = $1 AND platform = $2', [userId, 'facebook']);
+            const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2';
+            const existing = await pool.query(checkQuery, [page.id, userId]);
 
-            const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5)';
-            await pool.query(insertQuery, [userId, page.id, page.access_token, true, 'facebook']);
+            if (existing.rows.length > 0) {
+                const updateQuery = 'UPDATE social_accounts SET access_token = $2, is_active = TRUE, updated_at = NOW() WHERE page_id = $1 AND user_id = $3';
+                await pool.query(updateQuery, [page.id, page.access_token, userId]);
+            } else {
+                const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5)';
+                await pool.query(insertQuery, [userId, page.id, page.access_token, true, 'facebook']);
+            }
         }
 
         res.send(`<html><body style="font-family: Arial; text-align: center; padding: 50px;"><h2>🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2><p>ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p></body></html>`);
@@ -184,71 +199,95 @@ app.get('/auth/facebook/callback', async (req, res) => {
     }
 });
 
-// 🚀 ৫. পোস্ট ডেটা সেভ করার আপডেট এপিআই (SCHEDULE MULTI-IMAGE CONSECUTIVE DAYS SUPPORT)
+// ৫. সরাসরি ফেসবুক পেজে পোস্ট করার এপিআই
+app.post('/api/post-to-facebook', authenticateToken, async (req, res) => {
+    const { page_id, message } = req.body;
+    const userId = req.user.id;
+
+    try {
+        const result = await pool.query('SELECT access_token FROM social_accounts WHERE page_id = $1 AND user_id = $2', [page_id, userId]);
+        if (result.rows.length === 0) return res.status(404).send('Page not found or unauthorized!');
+
+        const token = result.rows[0].access_token;
+        const postUrl = `https://graph.facebook.com/v18.0/${page_id}/feed`;
+        const response = await axios.post(postUrl, {
+            message: message,
+            access_token: token
+        });
+
+        res.json({ success: true, postId: response.data.id });
+    } catch (error) {
+        console.error("Post Error:", error.response?.data || error.message);
+        res.status(500).json({ error: error.response?.data || error.message });
+    }
+});
+
+// ==========================================
+// 🚀 POST SAVING & SCHEDULING (WITH SUPABASE)
+// ==========================================
+
+// Helper: ফাইল আপলোড হ্যান্ডলার (Supabase অথবা Local Upload)
+const uploadSingleFile = async (file, userId, reqHost) => {
+    try {
+        if (supabase) {
+            const fileStream = fs.readFileSync(file.path);
+            const uniqueSuffix = Date.now() + '-' + Math.floor(Math.random() * 1E9);
+            const fileName = `user-${userId}-${uniqueSuffix}.jpg`;
+
+            const { data, error } = await supabase.storage
+                .from('postimages')
+                .upload(fileName, fileStream, {
+                    contentType: file.mimetype,
+                    upsert: true
+                });
+
+            if (error) {
+                console.error('Supabase Upload Error:', error.message);
+                return `https://${reqHost}/uploads/${file.filename}`;
+            } else {
+                const { data: publicUrlData } = supabase.storage
+                    .from('postimages')
+                    .getPublicUrl(fileName);
+                return publicUrlData.publicUrl;
+            }
+        } else {
+            return `https://${reqHost}/uploads/${file.filename}`;
+        }
+    } catch (uploadErr) {
+        console.error('File Upload Error:', uploadErr.message);
+        return `https://${reqHost}/uploads/${file.filename}`;
+    } finally {
+        try {
+            if (fs.existsSync(file.path)) {
+                fs.unlinkSync(file.path);
+            }
+        } catch (unlinkErr) {
+            console.error('Unlink Error:', unlinkErr.message);
+        }
+    }
+};
+
+// ৬. পোস্ট সেভ / শিডিউল এপিআই
 app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
     const userId = req.user.id;
     const { mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
-    
+    const files = req.files || [];
+
     const platforms = {
         facebook: facebook === 'true',
         instagram: instagram === 'true',
         pinterest: pinterest === 'true'
     };
 
-    const files = req.files || [];
-
-    // Helper: Supabase/Local Upload Logic
-    const uploadSingleFile = async (file) => {
-        try {
-            if (supabase) {
-                const fileStream = fs.readFileSync(file.path);
-                const uniqueSuffix = Date.now() + '-' + Math.floor(Math.random() * 1E9);
-                const fileName = `user-${userId}-${uniqueSuffix}.jpg`;
-
-                const { data, error } = await supabase.storage
-                    .from('postimages')
-                    .upload(fileName, fileStream, {
-                        contentType: file.mimetype,
-                        upsert: true
-                    });
-
-                if (error) {
-                    console.error('Supabase Upload Error:', error.message);
-                    return `https://${req.get('host')}/uploads/${file.filename}`;
-                } else {
-                    const { data: publicUrlData } = supabase.storage
-                        .from('postimages')
-                        .getPublicUrl(fileName);
-                    return publicUrlData.publicUrl;
-                }
-            } else {
-                return `https://${req.get('host')}/uploads/${file.filename}`;
-            }
-        } catch (uploadErr) {
-            console.error('File Upload Error:', uploadErr.message);
-            return `https://${req.get('host')}/uploads/${file.filename}`;
-        } finally {
-            try {
-                if (fs.existsSync(file.path)) {
-                    fs.unlinkSync(file.path);
-                }
-            } catch (unlinkErr) {
-                console.error('Unlink Error:', unlinkErr.message);
-            }
-        }
-    };
-
     try {
-        // CASE A: SCHEDULE MODE (প্রতিটি ছবির জন্য আলাদা দিনে ১টি করে পোস্ট তৈরি হবে)
+        // CASE A: SCHEDULE MODE (প্রতিটি ছবির জন্য ১টি করে পোস্ট একাধিক দিনে শিডিউল হবে)
         if (mode === 'schedule') {
             const baseDate = schedule_time ? new Date(schedule_time) : new Date();
             const savedPosts = [];
 
             if (files.length > 0) {
                 for (let i = 0; i < files.length; i++) {
-                    const imageUrl = await uploadSingleFile(files[i]);
-
-                    // ১ম পোস্ট নির্বাচিত দিনে, ২য় পোস্ট ১ম দিনের ১ দিন পর, ইত্যাদি
+                    const imageUrl = await uploadSingleFile(files[i], userId, req.get('host'));
                     const postScheduleDate = new Date(baseDate.getTime() + (i * 24 * 60 * 60 * 1000));
 
                     const query = `
@@ -269,7 +308,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
                     savedPosts.push(result.rows[0]);
                 }
             } else {
-                // ছবি ছাড়া কেবল প্রম্পট শিডিউল করা হলে
+                // ছবি ছাড়া কেবল কনটেন্ট শিডিউল করা হলে
                 const query = `
                     INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
                     VALUES ($1, $2, $3, $4, $5, $6) 
@@ -293,12 +332,11 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
                 posts: savedPosts
             });
         } 
-        
         // CASE B: INSTANT POST (manual / ai_agent)
         else {
             const imagePaths = [];
             for (const file of files) {
-                const url = await uploadSingleFile(file);
+                const url = await uploadSingleFile(file, userId, req.get('host'));
                 imagePaths.push(url);
             }
 
@@ -317,8 +355,9 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
             ];
 
             const result = await pool.query(query, values);
-            const savedPost = result.rows[0];
+                const savedPost = result.rows[0];
 
+            // n8n Webhook-এ ফরওয়ার্ড করা (যদি এনভায়রনমেন্ট ভ্যারিয়েবল সেট থাকে)
             if (process.env.N8N_WEBHOOK_URL) {
                 try {
                     await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
@@ -333,16 +372,20 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
                 post: savedPost
             });
         }
-
     } catch (error) {
         console.error('Save Post Error:', error.message);
         res.status(500).json({ success: false, message: 'Server error: ' + error.message });
     }
 });
 
-// ৬. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক
+// ==========================================
+// 🛠️ ACCOUNT MANAGEMENTS
+// ==========================================
+
+// ৭. ইউজার অ্যাকাউন্টস স্ট্যাটাস চেক
 app.get('/user/accounts', async (req, res) => {
     const userId = req.query.user_id;
+
     if (!userId) {
         return res.status(400).json({ success: false, message: 'user_id আবশ্যক!' });
     }
@@ -350,7 +393,7 @@ app.get('/user/accounts', async (req, res) => {
     try {
         const query = 'SELECT platform FROM social_accounts WHERE user_id = $1 AND is_active = true';
         const result = await pool.query(query, [userId]);
-        
+
         const platforms = result.rows.map(row => row.platform.toLowerCase().trim());
         res.status(200).json(platforms);
     } catch (err) {
@@ -359,21 +402,21 @@ app.get('/user/accounts', async (req, res) => {
     }
 });
 
-// ৭. অ্যাকাউন্ট ডিসকানেক্ট (ডাটাবেস থেকে সম্পূর্ণ রিমুভ)
+// ৮. সোশ্যাল অ্যাকাউন্ট ডিসকানেক্ট
 app.post('/auth/disconnect', async (req, res) => {
     const { user_id, platform } = req.body;
+
     if (!user_id || !platform) {
         return res.status(400).json({ success: false, message: 'user_id এবং platform আবশ্যক!' });
     }
 
     try {
-        // 🎯 is_active = false করার বদলে ডাটাবেস থেকে রিমুভ করা হচ্ছে
-        const query = 'DELETE FROM social_accounts WHERE user_id = $1 AND platform = $2';
+        const query = 'UPDATE social_accounts SET is_active = false, access_token = null, updated_at = NOW() WHERE user_id = $1 AND platform = $2';
         await pool.query(query, [user_id, platform.toLowerCase().trim()]);
 
         res.status(200).json({ 
             success: true, 
-            message: `${platform} সফলভাবে ডিসকানেক্ট ও ডাটাবেস থেকে রিমুভ করা হয়েছে।` 
+            message: `${platform} সফলভাবে ডিসকানেক্ট করা হয়েছে।` 
         });
     } catch (err) {
         console.error('Disconnect Error:', err);
