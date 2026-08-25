@@ -8,7 +8,11 @@ const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
-const { OAuth2Client } = require('google-auth-library'); // 🎯 Google Auth
+const { OAuth2Client } = require('google-auth-library');
+const { GoogleGenAI } = require('@google/genai'); // 🎯 Fixed Require
+
+// 🚀 Initialize Gemini Client
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const app = express();
 
@@ -124,7 +128,7 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// 🌐 ৩. গুগল লগইন এপিআই (FIXED)
+// 🌐 ৩. গুগল লগইন এপিআই
 app.post('/api/google-login', async (req, res) => {
     const { id_token } = req.body;
 
@@ -141,7 +145,6 @@ app.post('/api/google-login', async (req, res) => {
         const payload = ticket.getPayload();
         const email = payload.email;
 
-        // নিয়ন ডাটাবেসে ইউজার চেক বা তৈরি
         let query = 'SELECT * FROM users WHERE email = $1';
         let result = await pool.query(query, [email]);
         let user;
@@ -168,7 +171,8 @@ app.post('/api/google-login', async (req, res) => {
         res.status(500).json({ success: false, message: 'গুগল ভেরিফিকেশন ব্যর্থ হয়েছে: ' + err.message });
     }
 });
-// 📩 ৪. পাসওয়ার্ড রিসেটের জন্য OTP তৈরি এপিআই (email_otps টেবিলে সেভ হবে)
+
+// 📩 ৪. পাসওয়ার্ড রিসেটের জন্য OTP তৈরি এপিআই
 app.post('/api/send-otp', async (req, res) => {
     const { email } = req.body;
 
@@ -177,19 +181,16 @@ app.post('/api/send-otp', async (req, res) => {
     }
 
     try {
-        // ১. ইউজার ডাটাবেজে আছে কিনা চেক
         const userQuery = 'SELECT * FROM users WHERE email = $1';
         const userRes = await pool.query(userQuery, [email]);
 
         if (userRes.rows.length === 0) {
-            return res.status(404).json({ success: false, message: 'এই ইমেইলে কোনো অ্যাকাউন্ট পাওয়া যায়নি!' });
+            return res.status(404).json({ success: false, message: 'এই ইমেইলে কোনো অ্যাকাউন্ট পাওয়া যায়নি!' });
         }
 
-        // ২. ৬ ডিজিটের OTP এবং ৫ মিনিটের মেয়াদ (expires_at) জেনারেট
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // ৫ মিনিট পর এক্সপায়ার হবে
+        const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
 
-        // ৩. পুরাতন OTP থাকলে মুছে ফেলে নতুনটা ইনসার্ট করা
         await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
         
         const insertOtpQuery = `
@@ -217,19 +218,16 @@ app.post('/api/reset-password', async (req, res) => {
     }
 
     try {
-        // ১. OTP এবং মেয়াদ (expires_at) দুইটাই চেক করা
         const query = 'SELECT * FROM email_otps WHERE email = $1 AND otp = $2 AND expires_at > NOW()';
         const result = await pool.query(query, [email, otp]);
 
         if (result.rows.length === 0) {
-            return res.status(400).json({ success: false, message: 'ভুল বা মেয়াদোত্তীর্ণ OTP কোড!' });
+            return res.status(400).json({ success: false, message: 'ভুল বা মেয়াদোত্তীর্ণ OTP কোড!' });
         }
 
-        // ২. নতুন পাসওয়ার্ড হ্যাশ করে users টেবিলে আপডেট
         const hashedPassword = await bcrypt.hash(newPassword, 10);
         await pool.query('UPDATE users SET password = $1 WHERE email = $2', [hashedPassword, email]);
 
-        // ৩. কাজ শেষ, ব্যবহৃত OTP টেবিল থেকে মুছে ফেলা
         await pool.query('DELETE FROM email_otps WHERE email = $1', [email]);
 
         res.status(200).json({
@@ -539,6 +537,30 @@ app.post('/auth/disconnect', async (req, res) => {
     } catch (err) {
         console.error('Disconnect Error:', err);
         res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
+    }
+});
+
+// 🎯 AI Caption Generator Endpoint (Secured with authenticateToken)
+app.post('/api/generate-caption', authenticateToken, async (req, res) => {
+    try {
+        const { prompt } = req.body;
+        if (!prompt) return res.status(400).json({ success: false, message: 'Prompt is required' });
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: `Act as a professional social media manager. Based on this topic/description: "${prompt}", write ONLY ONE single, ready-to-publish, engaging social media post with hashtags and emojis. Do not add intro/outro text.`,
+        });
+
+        // Ensure text extraction is safe
+        const generatedText = typeof response.text === 'function' ? await response.text() : response.text;
+
+        return res.status(200).json({
+            success: true,
+            caption: generatedText.trim()
+        });
+    } catch (error) {
+        console.error("Gemini Error:", error);
+        return res.status(500).json({ success: false, error: error.message });
     }
 });
 
