@@ -564,51 +564,59 @@ app.post('/api/generate-caption', authenticateToken, async (req, res) => {
     }
 });
 // ইউজার প্রোফাইল ডাটা গেট করা
+// 👤 ১. ইউজার প্রোফাইল ডাটা পাওয়া
 app.get('/api/user/profile', authenticateToken, async (req, res) => {
     try {
-        const user = await User.findById(req.user.id).select('-password');
-        if (!user) {
+        const userId = req.user.id;
+        
+        // ইউজার ইনফরমেশন আনা
+        const userQuery = 'SELECT id, email, name, profile_pic, created_at FROM users WHERE id = $1';
+        const userResult = await pool.query(userQuery, [userId]);
+
+        if (userResult.rows.length === 0) {
             return res.status(404).json({ success: false, message: 'ইউজার পাওয়া যায়নি!' });
         }
-        res.status(200).json({ success: true, user });
+
+        // কানেক্ট করা সোশ্যাল একাউন্ট লিস্ট আনা
+        const accountsQuery = 'SELECT platform, page_id, page_name, is_active FROM social_accounts WHERE user_id = $1';
+        const accountsResult = await pool.query(accountsQuery, [userId]);
+
+        res.status(200).json({
+            success: true,
+            user: userResult.rows[0],
+            connected_accounts: accountsResult.rows
+        });
     } catch (err) {
+        console.error("Get Profile Error:", err);
         res.status(500).json({ success: false, message: 'সার্ভার এরর: ' + err.message });
     }
 });
 
-// ইউজার প্রোফাইল ডাটা আপডেট করা
+// 📝 ২. ইউজার প্রোফাইল (নাম ও প্রফাইল পিকচার) আপডেট করা
 app.put('/api/user/profile', authenticateToken, async (req, res) => {
-    const { name, phone, bio } = req.body;
+    const { name, profile_pic } = req.body;
+    const userId = req.user.id;
 
     try {
-        const user = await User.findById(req.user.id);
-        if (!user) {
-            return res.status(404).json({ success: false, message: 'ইউজার পাওয়া যায়নি!' });
-        }
-
-        // তথ্য আপডেট করা
-        if (name) user.name = name;
-        if (phone) user.phone = phone;
-        if (bio !== undefined) user.bio = bio;
-
-        await user.save();
+        const updateQuery = `
+            UPDATE users 
+            SET name = COALESCE($1, name), 
+                profile_pic = COALESCE($2, profile_pic)
+            WHERE id = $3 
+            RETURNING id, email, name, profile_pic;
+        `;
+        const result = await pool.query(updateQuery, [name, profile_pic, userId]);
 
         res.status(200).json({
             success: true,
             message: 'প্রোফাইল সফলভাবে আপডেট হয়েছে!',
-            user: {
-                id: user._id,
-                name: user.name,
-                email: user.email,
-                phone: user.phone,
-                bio: user.bio,
-            }
+            user: result.rows[0]
         });
     } catch (err) {
+        console.error("Update Profile Error:", err);
         res.status(500).json({ success: false, message: 'আপডেট করতে ব্যর্থ হয়েছে: ' + err.message });
     }
 });
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`সার্ভার সফলভাবে পোর্ট ${PORT}-এ রান হচ্ছে!`);
