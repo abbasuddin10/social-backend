@@ -617,6 +617,57 @@ app.put('/api/user/profile', authenticateToken, async (req, res) => {
         res.status(500).json({ success: false, message: 'আপডেট করতে ব্যর্থ হয়েছে: ' + err.message });
     }
 });
+
+// ==========================================
+// 🤖 AUTOMATION RULE SAVING ROUTE
+// ==========================================
+app.post('/api/create-automation-rule', authenticateToken, async (req, res) => {
+    const { user_prompt } = req.body;
+    const userId = req.user.id;
+
+    if (!user_prompt) {
+        return res.status(400).json({ success: false, message: 'User prompt is required!' });
+    }
+
+    try {
+        // ১. Gemini দিয়ে প্রম্পট পার্স করা
+        const response = await ai.models.generateContent({
+            model: 'gemini-3.6-flash',
+            contents: `Analyze this user instruction for social media automation: "${user_prompt}".
+                       Extract details and return JSON with keys: 
+                       "interval_hours" (number), "target_platforms" (array), "topic_summary" (string), "post_style" (string).`,
+        });
+
+        // ২. ডাটাবেসে Automation Rule সেভ করা (PostgreSQL Pool)
+        const query = `
+            INSERT INTO automation_rules (user_id, user_prompt, interval_hours, target_platforms, is_active)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING *;
+        `;
+        
+        // ডিফল্ট বা জেমিনি থেকে পাওয়া ভ্যালু
+        const values = [
+            userId,
+            user_prompt,
+            6, // interval_hours
+            JSON.stringify(['facebook', 'instagram']), 
+            true
+        ];
+
+        const result = await pool.query(query, values);
+
+        return res.status(200).json({
+            success: true,
+            message: 'Automation rule created successfully!',
+            rules: result.rows[0]
+        });
+
+    } catch (error) {
+        console.error("Create Rule Error:", error);
+        return res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`সার্ভার সফলভাবে পোর্ট ${PORT}-এ রান হচ্ছে!`);
