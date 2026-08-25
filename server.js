@@ -547,7 +547,7 @@ app.post('/api/generate-caption', authenticateToken, async (req, res) => {
         if (!prompt) return res.status(400).json({ success: false, message: 'Prompt is required' });
 
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3.6-flash',
             contents: `Act as a professional social media manager. Based on this topic/description: "${prompt}", write ONLY ONE single, ready-to-publish, engaging social media post with hashtags and emojis. Do not add intro/outro text.`,
         });
 
