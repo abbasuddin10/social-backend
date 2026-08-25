@@ -563,6 +563,51 @@ app.post('/api/generate-caption', authenticateToken, async (req, res) => {
         return res.status(500).json({ success: false, error: error.message });
     }
 });
+// ইউজার প্রোফাইল ডাটা গেট করা
+app.get('/api/user/profile', authenticateToken, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).select('-password');
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'ইউজার পাওয়া যায়নি!' });
+        }
+        res.status(200).json({ success: true, user });
+    } catch (err) {
+        res.status(500).json({ success: false, message: 'সার্ভার এরর: ' + err.message });
+    }
+});
+
+// ইউজার প্রোফাইল ডাটা আপডেট করা
+app.put('/api/user/profile', authenticateToken, async (req, res) => {
+    const { name, phone, bio } = req.body;
+
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) {
+            return res.status(404).json({ success: false, message: 'ইউজার পাওয়া যায়নি!' });
+        }
+
+        // তথ্য আপডেট করা
+        if (name) user.name = name;
+        if (phone) user.phone = phone;
+        if (bio !== undefined) user.bio = bio;
+
+        await user.save();
+
+        res.status(200).json({
+            success: true,
+            message: 'প্রোফাইল সফলভাবে আপডেট হয়েছে!',
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email,
+                phone: user.phone,
+                bio: user.bio,
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, message: 'আপডেট করতে ব্যর্থ হয়েছে: ' + err.message });
+    }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
