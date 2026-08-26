@@ -859,6 +859,18 @@ app.put('/api/update-post/:id', authenticateToken, async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// 🎯 Delete All Scheduled Posts for current user
+app.delete('/api/delete-all-posts', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    await pool.query('DELETE FROM scheduled_posts WHERE user_id = $1 AND status = $2', [userId, 'PENDING']);
+    res.status(200).json({ success: true, message: 'All scheduled posts deleted successfully!' });
+  } catch (error) {
+    console.error("Delete All Error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`সার্ভার সফলভাবে পোর্ট ${PORT}-এ রান হচ্ছে!`);
