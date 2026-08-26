@@ -741,6 +741,29 @@ app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
   }
 });
 
+// 🎯 ডাটাবেস থেকে ইউজারের সকল PENDING শিডিউল পোস্ট ফেস (GET) করার API
+app.get('/api/get-scheduled-posts', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const query = `
+      SELECT id, content, scheduled_at, target_platforms, images, status 
+      FROM scheduled_posts 
+      WHERE user_id = $1 AND status = 'PENDING' 
+      ORDER BY scheduled_at ASC;
+    `;
+
+    const result = await pool.query(query, [userId]);
+
+    res.status(200).json({
+      success: true,
+      posts: result.rows
+    });
+  } catch (error) {
+    console.error("Fetch Posts Error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`সার্ভার সফলভাবে পোর্ট ${PORT}-এ রান হচ্ছে!`);
