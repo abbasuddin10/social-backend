@@ -819,6 +819,46 @@ app.put('/api/update-post/:id', authenticateToken, async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+// 🎯 Post Update API (নিয়নে ডাটাবেস আপডেট করার জন্য)
+app.put('/api/update-post/:id', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const postId = req.params.id;
+    const { content, target_platforms, scheduled_at } = req.body;
+
+    const query = `
+      UPDATE scheduled_posts 
+      SET content = COALESCE($1, content), 
+          target_platforms = COALESCE($2, target_platforms), 
+          scheduled_at = COALESCE($3, scheduled_at) 
+      WHERE id = $4 AND user_id = $5 
+      RETURNING *;
+    `;
+
+    const values = [
+      content || null,
+      target_platforms ? JSON.stringify(target_platforms) : null,
+      scheduled_at || null,
+      postId,
+      userId
+    ];
+
+    const result = await pool.query(query, values);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ success: false, message: 'পোস্টটি পাওয়া যায়নি বা আপনার অ্যাক্সেস নেই!' });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'পোস্টটি সফলতা সাথে আপডেট হয়েছে!',
+      post: result.rows[0]
+    });
+  } catch (error) {
+    console.error("Update Error:", error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`সার্ভার সফলভাবে পোর্ট ${PORT}-এ রান হচ্ছে!`);
