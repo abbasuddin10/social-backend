@@ -624,51 +624,71 @@ app.post('/api/generate-user-plan', async (req, res) => {
   try {
     const { user_prompt } = req.body;
 
-    const prompt = `
-    You are an advanced AI Social Media Assistant. Analyze the user command: "${user_prompt}".
+    const systemPrompt = `
+You are an expert AI Social Media Assistant Agent. Your role is to understand user commands and transform them into precise, structured JSON actions for the backend system and Neon PostgreSQL Database.
 
-    Categorize into one of these intents:
-    1. "CREATE_POST": User wants to create new posts/schedules.
-    2. "DELETE_POSTS": User wants to cancel/delete pending posts or clear schedules.
-    3. "UPDATE_SCHEDULE": User wants to change time or platform for existing posts.
-    4. "ANALYZE_QUERY": User is asking for advice or best posting times.
+CURRENT TIME REFERENCE: ${new Date().toISOString()}
 
-    Return ONLY a JSON response based on intent:
+--- CORE BUSINESS RULES ---
 
-    FOR "CREATE_POST":
+1. INTENT DETECTION & CATEGORIZATION:
+   Analyze the user request and determine the primary "intent":
+   - "CREATE_POSTS": User wants to create instant, single, or multiple scheduled posts.
+   - "DELETE_POSTS": User wants to cancel, clear, or delete pending/scheduled posts.
+   - "UPDATE_POSTS": User wants to reschedule or edit existing scheduled posts.
+   - "PAUSE_AUTOMATION": User wants to pause all automated posting temporarily.
+
+2. DURATION & POST COUNT LIMITS:
+   - Default Schedule Rule: If the user requests recurring or multi-day posts BUT DOES NOT specify the number of days or post count (e.g., "আমার জন্য নিয়মিত পোস্ট বানাও"), DEFAULT TO 7 DAYS (7 posts, 1 post per day).
+   - Instant Request Rule: If the user requests an instant post (e.g., "এখনই পোস্ট বানাও"), set scheduled_at to current time and total posts to 1.
+   - Absolute Maximum Limit: ABSOLUTELY MAXIMUM 30 DAYS / 30 POSTS. If the user asks for more than 30 days (e.g., "আগামী ৬০ দিনের জন্য" or "১ মাসের বেশি"), STRICTLY TRUNCATE / LIMIT OUTPUT TO 30 POSTS ONLY.
+
+3. SMART TIMING (BEST TIME ALGORITHM):
+   - If the user specifies a time (e.g., "প্রতিদিন সকাল ৯টায়"), use that exact time.
+   - If the user DOES NOT specify a time, Gemini MUST act as a social media strategist and set optimal daily posting times (e.g., Peak Engagement Hours like 10:00 AM, 02:00 PM, or 08:00 PM local time) spread across consecutive days.
+
+4. PLATFORM SELECTION RULE:
+   - If the user specifies target platforms (e.g., "শুধু ফেসবুকে দাও"), set "platforms": ["facebook"].
+   - If the user DOES NOT specify platforms, DEFAULT TO ALL ACCOUNTS: ["facebook", "instagram", "pinterest"].
+
+5. DELETION RULES:
+   - If user asks to clear/delete all posts (e.g., "আগের সব পোস্ট কেটে দাও"), set "intent": "DELETE_POSTS" and "delete_scope": "ALL_PENDING".
+   - If user asks to delete specific posts (e.g., "গতকালের পোস্টটা কেটে দাও"), set "delete_scope": "SPECIFIC_DATE" with the target date.
+
+--- OUTPUT FORMAT REQUIREMENTS ---
+You MUST return ONLY raw valid JSON (no markdown formatting, no \`\`\`json wrappers).
+
+EXAMPLE JSON FOR "CREATE_POSTS":
+{
+  "intent": "CREATE_POSTS",
+  "intent_summary": "Generated 7 daily tech posts starting from tomorrow at optimal engagement times.",
+  "posts": [
     {
-      "intent": "CREATE_POST",
-      "intent_summary": "Creating promotional post for product",
-      "generated_content": "Full caption with emojis and hashtags...",
-      "target_platforms": ["facebook", "instagram"],
-      "image_prompt_idea": "3D render of a futuristic smartphone, dark purple theme...",
-      "scheduled_time": "2026-08-27T10:00:00.000Z",
-      "execution_steps": ["Generate caption & image prompt", "Schedule to DB for n8n"]
+      "day_number": 1,
+      "scheduled_at": "2026-08-27T10:00:00.000Z",
+      "platforms": ["facebook", "instagram", "pinterest"],
+      "content": "🚀 Tech Update Day 1: Engaging caption with emojis and relevant hashtags..."
     }
+  ]
+}
 
-    FOR "DELETE_POSTS":
-    {
-      "intent": "DELETE_POSTS",
-      "intent_summary": "Cancel all pending posts scheduled from yesterday",
-      "action": "CLEAR_PENDING_IN_DB",
-      "execution_steps": ["Find pending posts in DB", "Update status to cancelled"]
-    }
+EXAMPLE JSON FOR "DELETE_POSTS":
+{
+  "intent": "DELETE_POSTS",
+  "intent_summary": "Clearing all pending scheduled posts from the database per user request.",
+  "delete_scope": "ALL_PENDING"
+}
 
-    FOR "UPDATE_SCHEDULE":
-    {
-      "intent": "UPDATE_SCHEDULE",
-      "intent_summary": "Reschedule post to 7:00 PM",
-      "new_time": "2026-08-27T19:00:00.000Z",
-      "execution_steps": ["Locate target post in DB", "Update scheduled_at timestamp"]
-    }
-    `;
+USER COMMAND TO PROCESS: "${user_prompt}"
+`;
 
+    // Calling Gemini 3.6 Flash
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
-      contents: prompt,
+      contents: systemPrompt,
     });
 
-    // Clean JSON response from response text
+    // Cleaning JSON response
     const cleanJsonText = response.text.replace(/```json|```/g, '').trim();
     const parsedPlan = JSON.parse(cleanJsonText);
 
