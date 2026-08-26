@@ -621,52 +621,91 @@ app.put('/api/user/profile', authenticateToken, async (req, res) => {
 // ==========================================
 // 🤖 AUTOMATION RULE SAVING ROUTE
 // ==========================================
-app.post('/api/create-automation-rule', authenticateToken, async (req, res) => {
+// ==========================================
+// 🧠 1. AI PLAN GENERATOR (No DB Save Yet)
+// ==========================================
+app.post('/api/generate-user-plan', authenticateToken, async (req, res) => {
     const { user_prompt } = req.body;
+
+    if (!user_prompt) return res.status(400).json({ success: false, message: 'প্রম্পট দেওয়া বাধ্যতামূলক!' });
 
     try {
         const prompt = `
-        You are an intelligent AI Social Media Planner.
-        Analyze the user's intent: "${user_prompt}".
+        You are a smart AI Automation Assistant. The user provided this instruction: "${user_prompt}".
 
-        Create a structured execution plan based strictly on what the user wants. 
-        If the user didn't mention time intervals, target platforms, or specific conditions, do NOT assume or invent them. Mark them as null or "not_specified".
+        Based ONLY on what the user asked:
+        1. If they want a specific post right now, generate the post content.
+        2. If they want a schedule/automation rule, structure it accordingly.
+        3. Break down the steps you will perform.
 
-        Return ONLY a JSON object with this exact format:
+        Return ONLY a JSON response in this structure:
         {
-          "intent_summary": "Short explanation of what the user wants to achieve",
-          "action_required": "What needs to be done (e.g., generate_post, schedule_posts, auto_reply)",
-          "topic": "Topic or theme mentioned by user",
-          "schedule": {
-             "type": "recurring / one_time / not_specified",
+          "prompt_given": "${user_prompt}",
+          "action_type": "instant_post" or "scheduled_automation",
+          "generated_content": "The exact post caption/hashtags generated (or empty string if just automation)",
+          "target_platforms": ["facebook", "instagram"] (only if mentioned, else []),
+          "schedule_details": {
              "interval_hours": number or null,
-             "preferred_time": "time string or null"
+             "preferred_time": "string or null"
           },
-          "platforms": ["list of platforms mentioned, or empty array [] if none"],
           "execution_steps": [
-             "Step 1 to fulfill this request",
-             "Step 2...",
-             "Step 3..."
+             "Step 1: Generated the post content",
+             "Step 2: Waiting for user approval to save & execute"
           ]
         }
         `;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-3.6-flash',
+            model: 'gemini-2.5-flash',
             contents: prompt,
         });
 
-        const rawText = await response.text();
+        const rawText = response.text || '';
         const cleanJson = rawText.replace(/```json|```/g, '').trim();
-        const parsedPlan = JSON.parse(cleanJson);
+        const plan = JSON.parse(cleanJson);
 
-        return res.status(200).json({
+        return res.status(200).json({ success: true, plan: plan });
+
+    } catch (error) {
+        console.error("Plan Error:", error);
+        return res.status(500).json({ success: false, message: 'AI Error: ' + error.message });
+    }
+});
+
+// ==========================================
+// 💾 2. CONFIRM & SAVE TO NEON DB
+// ==========================================
+app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    const { plan } = req.body; // Flutter UI থেকে কনফার্ম হওয়া প্ল্যান ডাটা
+
+    try {
+        const query = `
+            INSERT INTO automation_rules (user_id, user_prompt, interval_hours, target_platforms, generated_post, is_active)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING *;
+        `;
+        
+        const values = [
+            userId,
+            plan.prompt_given,
+            plan.schedule_details?.interval_hours || null,
+            JSON.stringify(plan.target_platforms || []),
+            plan.generated_content || null,
+            true
+        ];
+
+        const result = await pool.query(query, values);
+
+        return res.status(201).json({
             success: true,
-            plan: parsedPlan
+            message: 'প্ল্যানটি নিয়ন ডাটাবেসে সফলভাবে সেভ হয়েছে!',
+            data: result.rows[0]
         });
 
     } catch (error) {
-        return res.status(500).json({ success: false, message: error.message });
+        console.error("DB Save Error:", error);
+        return res.status(500).json({ success: false, message: 'Database error: ' + error.message });
     }
 });
 
