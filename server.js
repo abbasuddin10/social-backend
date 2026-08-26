@@ -623,48 +623,50 @@ app.put('/api/user/profile', authenticateToken, async (req, res) => {
 // ==========================================
 app.post('/api/create-automation-rule', authenticateToken, async (req, res) => {
     const { user_prompt } = req.body;
-    const userId = req.user.id;
-
-    if (!user_prompt) {
-        return res.status(400).json({ success: false, message: 'User prompt is required!' });
-    }
 
     try {
-        // ১. Gemini দিয়ে প্রম্পট পার্স করা
+        const prompt = `
+        You are an intelligent AI Social Media Planner.
+        Analyze the user's intent: "${user_prompt}".
+
+        Create a structured execution plan based strictly on what the user wants. 
+        If the user didn't mention time intervals, target platforms, or specific conditions, do NOT assume or invent them. Mark them as null or "not_specified".
+
+        Return ONLY a JSON object with this exact format:
+        {
+          "intent_summary": "Short explanation of what the user wants to achieve",
+          "action_required": "What needs to be done (e.g., generate_post, schedule_posts, auto_reply)",
+          "topic": "Topic or theme mentioned by user",
+          "schedule": {
+             "type": "recurring / one_time / not_specified",
+             "interval_hours": number or null,
+             "preferred_time": "time string or null"
+          },
+          "platforms": ["list of platforms mentioned, or empty array [] if none"],
+          "execution_steps": [
+             "Step 1 to fulfill this request",
+             "Step 2...",
+             "Step 3..."
+          ]
+        }
+        `;
+
         const response = await ai.models.generateContent({
             model: 'gemini-3.6-flash',
-            contents: `Analyze this user instruction for social media automation: "${user_prompt}".
-                       Extract details and return JSON with keys: 
-                       "interval_hours" (number), "target_platforms" (array), "topic_summary" (string), "post_style" (string).`,
+            contents: prompt,
         });
 
-        // ২. ডাটাবেসে Automation Rule সেভ করা (PostgreSQL Pool)
-        const query = `
-            INSERT INTO automation_rules (user_id, user_prompt, interval_hours, target_platforms, is_active)
-            VALUES ($1, $2, $3, $4, $5)
-            RETURNING *;
-        `;
-        
-        // ডিফল্ট বা জেমিনি থেকে পাওয়া ভ্যালু
-        const values = [
-            userId,
-            user_prompt,
-            6, // interval_hours
-            JSON.stringify(['facebook', 'instagram']), 
-            true
-        ];
-
-        const result = await pool.query(query, values);
+        const rawText = await response.text();
+        const cleanJson = rawText.replace(/```json|```/g, '').trim();
+        const parsedPlan = JSON.parse(cleanJson);
 
         return res.status(200).json({
             success: true,
-            message: 'Automation rule created successfully!',
-            rules: result.rows[0]
+            plan: parsedPlan
         });
 
     } catch (error) {
-        console.error("Create Rule Error:", error);
-        return res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+        return res.status(500).json({ success: false, message: error.message });
     }
 });
 
