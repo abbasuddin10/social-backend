@@ -747,15 +747,25 @@ app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
 app.get('/api/get-scheduled-posts', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    const requestedMode = req.query.mode; // 👈 ফ্রন্টএন্ড থেকে ?mode=ai_agent বা ?mode=schedule ফিল্টার ডাটা রিসিভ করবে
 
-    const query = `
-      SELECT id, content, schedule_time AS scheduled_at, platforms AS target_platforms, images, is_posted 
+    let query = `
+      SELECT id, content, mode, schedule_time AS scheduled_at, platforms AS target_platforms, images, is_posted 
       FROM user_posts 
-      WHERE user_id = $1 AND is_posted = FALSE 
-      ORDER BY schedule_time ASC;
+      WHERE user_id = $1 AND is_posted = FALSE
     `;
+    
+    const queryParams = [userId];
 
-    const result = await pool.query(query, [userId]);
+    // যদি ফ্রন্টএন্ড থেকে specific কোনো mode চাওয়া হয় (যেমন: ai_agent বা schedule)
+    if (requestedMode) {
+      queryParams.push(requestedMode);
+      query += ` AND mode = $${queryParams.length}`;
+    }
+
+    query += ` ORDER BY schedule_time ASC;`;
+
+    const result = await pool.query(query, queryParams);
 
     res.status(200).json({
       success: true,
