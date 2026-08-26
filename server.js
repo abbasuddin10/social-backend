@@ -702,31 +702,42 @@ USER COMMAND TO PROCESS: "${user_prompt}"
 });
 
 // Confirm & Execute DB Operations
-app.post('/api/confirm-save-plan', async (req, res) => {
+// 🎯 Confirm & Save All Posts API
+app.post('/api/confirm-save-plan', authenticateUser, async (req, res) => {
   try {
-    const { plan } = req.body;
-    const userId = req.user.id; // From Auth Middleware
+    const { posts } = req.body; // Flutter থেকে আসা array of generated/edited posts
+    const userId = req.user.id;  // JWT Auth Middleware থেকে পাওয়া ইউনিক ইউজার আইডি
 
-    if (plan.intent === 'CREATE_POST') {
+    if (!posts || !Array.isArray(posts) || posts.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "সেভ করার জন্য কোনো পোস্ট পাওয়া যায়নি!" 
+      });
+    }
+
+    // মাল্টি-ইউজার সেফটি: ব্যাকএন্ডেই Loop চালিয়ে প্রতিটি পোস্ট নির্দিষ্ট user_id দিয়ে সেভ করা
+    for (let post of posts) {
       await db.query(
-        `INSERT INTO posts (user_id, content, platforms, scheduled_at, status) 
-         VALUES ($1, $2, $3, $4, 'pending')`,
-        [userId, plan.generated_content, JSON.stringify(plan.target_platforms), plan.scheduled_time]
-      );
-    } else if (plan.intent === 'DELETE_POSTS') {
-      await db.query(
-        `UPDATE posts SET status = 'cancelled' WHERE user_id = $1 AND status = 'pending'`,
-        [userId]
-      );
-    } else if (plan.intent === 'UPDATE_SCHEDULE') {
-      await db.query(
-        `UPDATE posts SET scheduled_at = $1 WHERE user_id = $1 AND status = 'pending'`,
-        [plan.new_time]
+        `INSERT INTO scheduled_posts 
+         (user_id, content, scheduled_at, target_platforms, images, status) 
+         VALUES ($1, $2, $3, $4, $5, 'PENDING')`,
+        [
+          userId, 
+          post.content, 
+          post.scheduled_at, 
+          JSON.stringify(post.platforms || ["facebook", "instagram", "pinterest"]),
+          JSON.stringify(post.images || [])
+        ]
       );
     }
 
-    res.json({ success: true, message: "Operation completed successfully in Neon DB" });
+    res.json({
+      success: true,
+      message: `সফলভাবে ${posts.length}টি পোস্ট ডাটাবেসে শিডিউল করা হয়েছে!`
+    });
+
   } catch (error) {
+    console.error("Save Plan Error:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
