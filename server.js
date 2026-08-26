@@ -620,93 +620,95 @@ app.put('/api/user/profile', authenticateToken, async (req, res) => {
 
 // ==========================================
 // 🤖 AUTOMATION RULE SAVING ROUTE
-// ==========================================
-// ==========================================
-// 🧠 1. AI PLAN GENERATOR (No DB Save Yet)
-// ==========================================
-app.post('/api/generate-user-plan', authenticateToken, async (req, res) => {
+app.post('/api/generate-user-plan', async (req, res) => {
+  try {
     const { user_prompt } = req.body;
 
-    if (!user_prompt) return res.status(400).json({ success: false, message: 'প্রম্পট দেওয়া বাধ্যতামূলক!' });
+    const prompt = `
+    You are an advanced AI Social Media Assistant. Analyze the user command: "${user_prompt}".
 
-    try {
-        const prompt = `
-        You are a smart AI Automation Assistant. The user provided this instruction: "${user_prompt}".
+    Categorize into one of these intents:
+    1. "CREATE_POST": User wants to create new posts/schedules.
+    2. "DELETE_POSTS": User wants to cancel/delete pending posts or clear schedules.
+    3. "UPDATE_SCHEDULE": User wants to change time or platform for existing posts.
+    4. "ANALYZE_QUERY": User is asking for advice or best posting times.
 
-        Based ONLY on what the user asked:
-        1. If they want a specific post right now, generate the post content.
-        2. If they want a schedule/automation rule, structure it accordingly.
-        3. Break down the steps you will perform.
+    Return ONLY a JSON response based on intent:
 
-        Return ONLY a JSON response in this structure:
-        {
-          "prompt_given": "${user_prompt}",
-          "action_type": "instant_post" or "scheduled_automation",
-          "generated_content": "The exact post caption/hashtags generated (or empty string if just automation)",
-          "target_platforms": ["facebook", "instagram"] (only if mentioned, else []),
-          "schedule_details": {
-             "interval_hours": number or null,
-             "preferred_time": "string or null"
-          },
-          "execution_steps": [
-             "Step 1: Generated the post content",
-             "Step 2: Waiting for user approval to save & execute"
-          ]
-        }
-        `;
-
-        const response = await ai.models.generateContent({
-            model: 'gemini-3.6-flash',
-            contents: prompt,
-        });
-
-        const rawText = response.text || '';
-        const cleanJson = rawText.replace(/```json|```/g, '').trim();
-        const plan = JSON.parse(cleanJson);
-
-        return res.status(200).json({ success: true, plan: plan });
-
-    } catch (error) {
-        console.error("Plan Error:", error);
-        return res.status(500).json({ success: false, message: 'AI Error: ' + error.message });
+    FOR "CREATE_POST":
+    {
+      "intent": "CREATE_POST",
+      "intent_summary": "Creating promotional post for product",
+      "generated_content": "Full caption with emojis and hashtags...",
+      "target_platforms": ["facebook", "instagram"],
+      "image_prompt_idea": "3D render of a futuristic smartphone, dark purple theme...",
+      "scheduled_time": "2026-08-27T10:00:00.000Z",
+      "execution_steps": ["Generate caption & image prompt", "Schedule to DB for n8n"]
     }
+
+    FOR "DELETE_POSTS":
+    {
+      "intent": "DELETE_POSTS",
+      "intent_summary": "Cancel all pending posts scheduled from yesterday",
+      "action": "CLEAR_PENDING_IN_DB",
+      "execution_steps": ["Find pending posts in DB", "Update status to cancelled"]
+    }
+
+    FOR "UPDATE_SCHEDULE":
+    {
+      "intent": "UPDATE_SCHEDULE",
+      "intent_summary": "Reschedule post to 7:00 PM",
+      "new_time": "2026-08-27T19:00:00.000Z",
+      "execution_steps": ["Locate target post in DB", "Update scheduled_at timestamp"]
+    }
+    `;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.6-flash',
+      contents: prompt,
+    });
+
+    // Clean JSON response from response text
+    const cleanJsonText = response.text.replace(/```json|```/g, '').trim();
+    const parsedPlan = JSON.parse(cleanJsonText);
+
+    res.json({
+      success: true,
+      plan: parsedPlan
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
-// ==========================================
-// 💾 2. CONFIRM & SAVE TO NEON DB
-// ==========================================
-app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
-    const userId = req.user.id;
-    const { plan } = req.body; // Flutter UI থেকে কনফার্ম হওয়া প্ল্যান ডাটা
+// Confirm & Execute DB Operations
+app.post('/api/confirm-save-plan', async (req, res) => {
+  try {
+    const { plan } = req.body;
+    const userId = req.user.id; // From Auth Middleware
 
-    try {
-        const query = `
-            INSERT INTO automation_rules (user_id, user_prompt, interval_hours, target_platforms, generated_post, is_active)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING *;
-        `;
-        
-        const values = [
-            userId,
-            plan.prompt_given,
-            plan.schedule_details?.interval_hours || null,
-            JSON.stringify(plan.target_platforms || []),
-            plan.generated_content || null,
-            true
-        ];
-
-        const result = await pool.query(query, values);
-
-        return res.status(201).json({
-            success: true,
-            message: 'প্ল্যানটি নিয়ন ডাটাবেসে সফলভাবে সেভ হয়েছে!',
-            data: result.rows[0]
-        });
-
-    } catch (error) {
-        console.error("DB Save Error:", error);
-        return res.status(500).json({ success: false, message: 'Database error: ' + error.message });
+    if (plan.intent === 'CREATE_POST') {
+      await db.query(
+        `INSERT INTO posts (user_id, content, platforms, scheduled_at, status) 
+         VALUES ($1, $2, $3, $4, 'pending')`,
+        [userId, plan.generated_content, JSON.stringify(plan.target_platforms), plan.scheduled_time]
+      );
+    } else if (plan.intent === 'DELETE_POSTS') {
+      await db.query(
+        `UPDATE posts SET status = 'cancelled' WHERE user_id = $1 AND status = 'pending'`,
+        [userId]
+      );
+    } else if (plan.intent === 'UPDATE_SCHEDULE') {
+      await db.query(
+        `UPDATE posts SET scheduled_at = $1 WHERE user_id = $1 AND status = 'pending'`,
+        [plan.new_time]
+      );
     }
+
+    res.json({ success: true, message: "Operation completed successfully in Neon DB" });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
