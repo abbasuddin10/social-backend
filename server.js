@@ -701,9 +701,8 @@ USER COMMAND TO PROCESS: "${user_prompt}"
   }
 });
 
-// Confirm & Execute DB Operations
 // 🎯 Confirm & Save All Posts API
-app.post('/api/confirm-save-plan', authenticateUser, async (req, res) => {
+app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
   try {
     const { posts } = req.body; // Flutter থেকে আসা array of generated/edited posts
     const userId = req.user.id;  // JWT Auth Middleware থেকে পাওয়া ইউনিক ইউজার আইডি
@@ -715,9 +714,9 @@ app.post('/api/confirm-save-plan', authenticateUser, async (req, res) => {
       });
     }
 
-    // মাল্টি-ইউজার সেফটি: ব্যাকএন্ডেই Loop চালিয়ে প্রতিটি পোস্ট নির্দিষ্ট user_id দিয়ে সেভ করা
+    // মাল্টি-ইউজার সেফটি: pool.query ব্যবহার করে লুপ চালানো
     for (let post of posts) {
-      await db.query(
+      await pool.query(
         `INSERT INTO scheduled_posts 
          (user_id, content, scheduled_at, target_platforms, images, status) 
          VALUES ($1, $2, $3, $4, $5, 'PENDING')`,
