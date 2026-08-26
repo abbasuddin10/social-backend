@@ -652,8 +652,8 @@ CURRENT TIME REFERENCE: ${new Date().toISOString()}
    - If the user DOES NOT specify platforms, DEFAULT TO ALL ACCOUNTS: ["facebook", "instagram", "pinterest"].
 
 5. DELETION RULES:
-   - If user asks to clear/delete all posts (e.g., "আগের সব পোস্ট কেটে দাও"), set "intent": "DELETE_POSTS" and "delete_scope": "ALL_PENDING".
-   - If user asks to delete specific posts (e.g., "গতকালের পোস্টটা কেটে দাও"), set "delete_scope": "SPECIFIC_DATE" with the target date.
+   - If user asks to clear/delete all posts (e.g., "আগের সব পোস্ট কেটে দাও"), set "intent": "DELETE_POSTS", "is_delete": true, and "delete_scope": "ALL_PENDING".
+   - If user asks to delete specific posts (e.g., "গতকালের পোস্টটা কেটে দাও"), set "intent": "DELETE_POSTS", "is_delete": true, with "delete_scope": "SPECIFIC_DATE" and target date.
 
 --- OUTPUT FORMAT REQUIREMENTS ---
 You MUST return ONLY raw valid JSON (no markdown formatting, no \`\`\`json wrappers).
@@ -661,6 +661,7 @@ You MUST return ONLY raw valid JSON (no markdown formatting, no \`\`\`json wrapp
 EXAMPLE JSON FOR "CREATE_POSTS":
 {
   "intent": "CREATE_POSTS",
+  "is_delete": false,
   "intent_summary": "Generated 7 daily tech posts starting from tomorrow at optimal engagement times.",
   "posts": [
     {
@@ -675,6 +676,7 @@ EXAMPLE JSON FOR "CREATE_POSTS":
 EXAMPLE JSON FOR "DELETE_POSTS":
 {
   "intent": "DELETE_POSTS",
+  "is_delete": true,
   "intent_summary": "Clearing all pending scheduled posts from the database per user request.",
   "delete_scope": "ALL_PENDING"
 }
@@ -700,7 +702,6 @@ USER COMMAND TO PROCESS: "${user_prompt}"
     res.status(500).json({ success: false, error: error.message });
   }
 });
-
 // 🎯 Confirm & Save All Posts API
 app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
   try {
