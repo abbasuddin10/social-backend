@@ -9,7 +9,7 @@ const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
 const { OAuth2Client } = require('google-auth-library');
-const { GoogleGenAI } = require('@google/genai'); // 🎯 Fixed Require
+const { GoogleGenAI } = require('@google/genai');
 
 // 🚀 Initialize Gemini Client
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -563,7 +563,7 @@ app.post('/api/generate-caption', authenticateToken, async (req, res) => {
         return res.status(500).json({ success: false, error: error.message });
     }
 });
-// ইউজার প্রোফাইল ডাটা গেট করা
+
 // 👤 ১. ইউজার প্রোফাইল ডাটা পাওয়া
 app.get('/api/user/profile', authenticateToken, async (req, res) => {
     try {
@@ -702,11 +702,12 @@ USER COMMAND TO PROCESS: "${user_prompt}"
     res.status(500).json({ success: false, error: error.message });
   }
 });
-// 🎯 Confirm & Save All Posts API
+
+// 🎯 Confirm & Save All Posts API (Updated to user_posts)
 app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
   try {
-    const { posts } = req.body; // Flutter থেকে আসা array of generated/edited posts
-    const userId = req.user.id;  // JWT Auth Middleware থেকে পাওয়া ইউনিক ইউজার আইডি
+    const { posts } = req.body;
+    const userId = req.user.id;
 
     if (!posts || !Array.isArray(posts) || posts.length === 0) {
       return res.status(400).json({ 
@@ -715,18 +716,18 @@ app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
       });
     }
 
-    // মাল্টি-ইউজার সেফটি: pool.query ব্যবহার করে লুপ চালানো
     for (let post of posts) {
       await pool.query(
-        `INSERT INTO scheduled_posts 
-         (user_id, content, scheduled_at, target_platforms, images, status) 
-         VALUES ($1, $2, $3, $4, $5, 'PENDING')`,
+        `INSERT INTO user_posts 
+         (user_id, mode, content, platforms, schedule_time, images) 
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         [
           userId, 
+          'ai_agent',
           post.content, 
-          post.scheduled_at, 
-          JSON.stringify(post.platforms || ["facebook", "instagram", "pinterest"]),
-          JSON.stringify(post.images || [])
+          JSON.stringify(post.platforms || { facebook: true, instagram: true, pinterest: true }),
+          post.scheduled_at,
+          post.images || []
         ]
       );
     }
@@ -742,16 +743,16 @@ app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
   }
 });
 
-// 🎯 ডাটাবেস থেকে ইউজারের সকল PENDING শিডিউল পোস্ট ফেস (GET) করার API
+// 🎯 ডাটাবেস থেকে ইউজারের পোস্ট ফেস (GET) করার API (Updated to user_posts)
 app.get('/api/get-scheduled-posts', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
 
     const query = `
-      SELECT id, content, scheduled_at, target_platforms, images, status 
-      FROM scheduled_posts 
-      WHERE user_id = $1 AND status = 'PENDING' 
-      ORDER BY scheduled_at ASC;
+      SELECT id, content, schedule_time AS scheduled_at, platforms AS target_platforms, images, is_posted 
+      FROM user_posts 
+      WHERE user_id = $1 AND is_posted = FALSE 
+      ORDER BY schedule_time ASC;
     `;
 
     const result = await pool.query(query, [userId]);
@@ -765,14 +766,15 @@ app.get('/api/get-scheduled-posts', authenticateToken, async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
-// 🎯 ১. Single Post Delete API
+
+// 🎯 ১. Single Post Delete API (Updated to user_posts)
 app.delete('/api/delete-post/:id', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const postId = req.params.id;
 
     const result = await pool.query(
-      'DELETE FROM scheduled_posts WHERE id = $1 AND user_id = $2 RETURNING *',
+      'DELETE FROM user_posts WHERE id = $1 AND user_id = $2 RETURNING *',
       [postId, userId]
     );
 
@@ -787,40 +789,7 @@ app.delete('/api/delete-post/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// 🎯 ২. Single Post Edit/Update API
-app.put('/api/update-post/:id', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const postId = req.params.id;
-    const { content, target_platforms, scheduled_at } = req.body;
-
-    const result = await pool.query(
-      `UPDATE scheduled_posts 
-       SET content = COALESCE($1, content), 
-           target_platforms = COALESCE($2, target_platforms), 
-           scheduled_at = COALESCE($3, scheduled_at) 
-       WHERE id = $4 AND user_id = $5 
-       RETURNING *`,
-      [
-        content,
-        target_platforms ? JSON.stringify(target_platforms) : null,
-        scheduled_at,
-        postId,
-        userId
-      ]
-    );
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ success: false, message: 'পোস্টটি আপডেট করা সম্ভব হয়নি!' });
-    }
-
-    res.status(200).json({ success: true, message: 'পোস্ট আপডেট হয়েছে!', post: result.rows[0] });
-  } catch (error) {
-    console.error("Update Error:", error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-// 🎯 Post Update API (নিয়নে ডাটাবেস আপডেট করার জন্য)
+// 🎯 ২. Single Post Edit/Update API (Updated to user_posts)
 app.put('/api/update-post/:id', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -828,10 +797,10 @@ app.put('/api/update-post/:id', authenticateToken, async (req, res) => {
     const { content, target_platforms, scheduled_at } = req.body;
 
     const query = `
-      UPDATE scheduled_posts 
+      UPDATE user_posts 
       SET content = COALESCE($1, content), 
-          target_platforms = COALESCE($2, target_platforms), 
-          scheduled_at = COALESCE($3, scheduled_at) 
+          platforms = COALESCE($2, platforms), 
+          schedule_time = COALESCE($3, schedule_time) 
       WHERE id = $4 AND user_id = $5 
       RETURNING *;
     `;
@@ -861,17 +830,18 @@ app.put('/api/update-post/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// 🎯 Delete All Scheduled Posts for current user
+// 🎯 Delete All Scheduled Posts for current user (Updated to user_posts)
 app.delete('/api/delete-all-posts', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    await pool.query('DELETE FROM scheduled_posts WHERE user_id = $1 AND status = $2', [userId, 'PENDING']);
+    await pool.query('DELETE FROM user_posts WHERE user_id = $1 AND is_posted = FALSE', [userId]);
     res.status(200).json({ success: true, message: 'All scheduled posts deleted successfully!' });
   } catch (error) {
     console.error("Delete All Error:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`সার্ভার সফলভাবে পোর্ট ${PORT}-এ রান হচ্ছে!`);
