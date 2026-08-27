@@ -564,7 +564,7 @@ app.post('/api/generate-caption', authenticateToken, async (req, res) => {
     }
 });
 
-// 👤 ১. ইউজার প্রোফাইল ডাটা পাওয়া
+// 👤 ১. ইউজার প্রোফাইল ডাটা পাওয়া
 app.get('/api/user/profile', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
@@ -574,7 +574,7 @@ app.get('/api/user/profile', authenticateToken, async (req, res) => {
         const userResult = await pool.query(userQuery, [userId]);
 
         if (userResult.rows.length === 0) {
-            return res.status(404).json({ success: false, message: 'ইউজার পাওয়া যায়নি!' });
+            return res.status(404).json({ success: false, message: 'ইউজার পাওয়া যায়নি!' });
         }
 
         // কানেক্ট করা সোশ্যাল একাউন্ট লিস্ট আনা
@@ -609,12 +609,12 @@ app.put('/api/user/profile', authenticateToken, async (req, res) => {
 
         res.status(200).json({
             success: true,
-            message: 'প্রোফাইল সফলভাবে আপডেট হয়েছে!',
+            message: 'প্রোফাইল সফলভাবে আপডেট হয়েছে!',
             user: result.rows[0]
         });
     } catch (err) {
         console.error("Update Profile Error:", err);
-        res.status(500).json({ success: false, message: 'আপডেট করতে ব্যর্থ হয়েছে: ' + err.message });
+        res.status(500).json({ success: false, message: 'আপডেট করতে ব্যর্থ হয়েছে: ' + err.message });
     }
 });
 
@@ -712,7 +712,7 @@ app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
     if (!posts || !Array.isArray(posts) || posts.length === 0) {
       return res.status(400).json({ 
         success: false, 
-        message: "সেভ করার জন্য কোনো পোস্ট পাওয়া যায়নি!" 
+        message: "সেভ করার জন্য কোনো পোস্ট পাওয়া যায়নি!" 
       });
     }
 
@@ -734,7 +734,7 @@ app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
 
     res.json({
       success: true,
-      message: `সফলভাবে ${posts.length}টি পোস্ট ডাটাবেসে শিডিউল করা হয়েছে!`
+      message: `সফলভাবে ${posts.length}টি পোস্ট ডাটাবেসে শিডিউল করা হয়েছে!`
     });
 
   } catch (error) {
@@ -757,7 +757,7 @@ app.get('/api/get-scheduled-posts', authenticateToken, async (req, res) => {
     
     const queryParams = [userId];
 
-    // যদি ফ্রন্টএন্ড থেকে specific কোনো mode চাওয়া হয় (যেমন: ai_agent বা schedule)
+    // যদি ফ্রন্টএন্ড থেকে specific কোনো mode চাওয়া হয় (যেমন: ai_agent বা schedule)
     if (requestedMode) {
       queryParams.push(requestedMode);
       query += ` AND mode = $${queryParams.length}`;
@@ -789,29 +789,41 @@ app.delete('/api/delete-post/:id', authenticateToken, async (req, res) => {
     );
 
     if (result.rowCount === 0) {
-      return res.status(404).json({ success: false, message: 'পোস্টটি পাওয়া যায়নি বা অ্যাক্সেস নেই!' });
+      return res.status(404).json({ success: false, message: 'পোস্টটি পাওয়া যায়নি বা অ্যাক্সেস নেই!' });
     }
 
-    res.status(200).json({ success: true, message: 'পোস্টটি সফলতা সাথে মুছে ফেলা হয়েছে!' });
+    res.status(200).json({ success: true, message: 'পোস্টটি সফলতা সাথে মুছে ফেলা হয়েছে!' });
   } catch (error) {
     console.error("Delete Error:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 🎯 ২. Single Post Edit/Update API (Updated to user_posts)
-app.put('/api/update-post/:id', authenticateToken, async (req, res) => {
+// 🎯 ২. Single Post Edit/Update API (Updated to support image + content updates)
+app.put('/api/update-post/:id', authenticateToken, upload.array('images'), async (req, res) => {
   try {
     const userId = req.user.id;
     const postId = req.params.id;
     const { content, target_platforms, scheduled_at } = req.body;
+    const files = req.files || [];
+
+    // নতুন ইমেজ পাঠানো হয়ে থাকলে Supabase/Local এ আপলোড হবে
+    let updatedImages = null;
+    if (files.length > 0) {
+      updatedImages = [];
+      for (const file of files) {
+        const url = await uploadSingleFile(file, userId, req.get('host'));
+        updatedImages.push(url);
+      }
+    }
 
     const query = `
       UPDATE user_posts 
       SET content = COALESCE($1, content), 
           platforms = COALESCE($2, platforms), 
-          schedule_time = COALESCE($3, schedule_time) 
-      WHERE id = $4 AND user_id = $5 
+          schedule_time = COALESCE($3, schedule_time),
+          images = COALESCE($4, images)
+      WHERE id = $5 AND user_id = $6 
       RETURNING *;
     `;
 
@@ -819,6 +831,7 @@ app.put('/api/update-post/:id', authenticateToken, async (req, res) => {
       content || null,
       target_platforms ? JSON.stringify(target_platforms) : null,
       scheduled_at || null,
+      updatedImages ? updatedImages : null,
       postId,
       userId
     ];
@@ -826,12 +839,12 @@ app.put('/api/update-post/:id', authenticateToken, async (req, res) => {
     const result = await pool.query(query, values);
 
     if (result.rowCount === 0) {
-      return res.status(404).json({ success: false, message: 'পোস্টটি পাওয়া যায়নি বা আপনার অ্যাক্সেস নেই!' });
+      return res.status(404).json({ success: false, message: 'পোস্টটি পাওয়া যায়নি বা আপনার অ্যাক্সেস নেই!' });
     }
 
     res.status(200).json({
       success: true,
-      message: 'পোস্টটি সফলতা সাথে আপডেট হয়েছে!',
+      message: 'পোস্টটি সফলতার সাথে আপডেট হয়েছে!',
       post: result.rows[0]
     });
   } catch (error) {
