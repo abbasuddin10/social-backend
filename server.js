@@ -241,7 +241,7 @@ app.post('/api/reset-password', async (req, res) => {
 });
 
 // ==========================================
-// 📘 FACEBOOK AUTH ROUTES
+// 📘 FACEBOOK & INSTAGRAM AUTH ROUTES
 // ==========================================
 app.get('/auth/facebook', (req, res) => {
     const userId = req.query.user_id;
@@ -254,7 +254,18 @@ app.get('/auth/facebook', (req, res) => {
     const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
     const state = JSON.stringify({ user_id: userId });
 
-    const fbLoginUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=pages_show_list,pages_manage_posts,pages_read_engagement`;
+    // 🎯 Scope-এ Instagram এবং ভবিষ্যতে লাইক/কমেন্ট রিড করার পারমিশন যুক্ত করা হয়েছে
+    const scope = [
+        'pages_show_list',
+        'pages_manage_posts',
+        'pages_read_engagement',
+        'pages_read_user_content',
+        'instagram_basic',
+        'instagram_content_publish',
+        'instagram_manage_comments'
+    ].join(',');
+
+    const fbLoginUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=${scope}`;
     res.redirect(fbLoginUrl);
 });
 
@@ -281,20 +292,23 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const appSecret = process.env.FACEBOOK_APP_SECRET;
         const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
 
+        // ১. Short-Lived Access Token গ্রহণ
         const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
         const tokenResponse = await axios.get(tokenUrl);
         const shortLivedToken = tokenResponse.data.access_token;
 
+        // ২. Long-Lived Access Token গ্রহণ (৬০ দিনের জন্য ভ্যালিড)
         const longLivedUrl = `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken}`;
         const longLivedResponse = await axios.get(longLivedUrl);
         const longLivedAccessToken = longLivedResponse.data.access_token;
 
+        // ৩. ইউজারের সব Facebook Page-এর লিস্ট ফেচ করা
         const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${longLivedAccessToken}`;
         const pagesResponse = await axios.get(pagesUrl);
         const pages = pagesResponse.data.data;
 
         for (const page of pages) {
-            // 📌 ১. ফেসবুক পেজ সেভ বা আপডেট
+            // 📌 ৩.১ ফেসবুক পেজ সেভ বা আপডেট
             const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2';
             const existing = await pool.query(checkQuery, [page.id, userId]);
 
@@ -306,7 +320,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
                 await pool.query(insertQuery, [userId, page.id, page.name, page.access_token, true, 'facebook']);
             }
 
-            // 📸 ২. এই ফেসবুক পেজের সাথে ইনস্টাগ্রাম বিজনেস অ্যাকাউন্ট লিঙ্ক আছে কিনা চেক ও সেভ
+            // 📸 ৩.২ এই ফেসবুক পেজের সাথে লিঙ্কড থাকা Instagram Business Account চেক ও সেভ
             try {
                 const igUrl = `https://graph.facebook.com/v18.0/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`;
                 const igResponse = await axios.get(igUrl);
@@ -332,9 +346,10 @@ app.get('/auth/facebook/callback', async (req, res) => {
                 console.error(`Instagram fetch error for page ${page.id}:`, igErr.message);
             }
         }
-        res.send(`<html><body style="font-family: Arial; text-align: center; padding: 50px;"><h2>🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2><p>ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p></body></html>`);
+
+        res.send(`<html><body style="font-family: Arial; text-align: center; padding: 50px;"><h2>🎉 ফেসবুক ও ইনস্টাগ্রাম অ্যাকাউন্ট সফলভাবে কানেক্ট হয়েছে!</h2><p>ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p></body></html>`);
     } catch (error) {
-        console.error("Facebook Auth Error:", error.response?.data || error.message);
+        console.error("Facebook/Instagram Auth Error:", error.response?.data || error.message);
         res.status(500).send('Authentication failed!');
     }
 });
@@ -360,7 +375,6 @@ app.post('/api/post-to-facebook', authenticateToken, async (req, res) => {
         res.status(500).json({ error: error.response?.data || error.message });
     }
 });
-
 // ==========================================
 // 🚀 POST SAVING & SCHEDULING (WITH SUPABASE)
 // ==========================================
