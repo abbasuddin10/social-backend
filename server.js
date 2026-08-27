@@ -294,6 +294,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const pages = pagesResponse.data.data;
 
         for (const page of pages) {
+            // 📌 ১. ফেসবুক পেজ সেভ বা আপডেট
             const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2';
             const existing = await pool.query(checkQuery, [page.id, userId]);
 
@@ -304,8 +305,33 @@ app.get('/auth/facebook/callback', async (req, res) => {
                 const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, page_name, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5, $6)';
                 await pool.query(insertQuery, [userId, page.id, page.name, page.access_token, true, 'facebook']);
             }
-        }
 
+            // 📸 ২. এই ফেসবুক পেজের সাথে ইনস্টাগ্রাম বিজনেস অ্যাকাউন্ট লিঙ্ক আছে কিনা চেক ও সেভ
+            try {
+                const igUrl = `https://graph.facebook.com/v18.0/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`;
+                const igResponse = await axios.get(igUrl);
+                
+                if (igResponse.data && igResponse.data.instagram_business_account) {
+                    const igId = igResponse.data.instagram_business_account.id;
+                    const igPageName = `${page.name} (IG)`;
+
+                    const checkIg = await pool.query(
+                        'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2 AND platform = $3', 
+                        [igId, userId, 'instagram']
+                    );
+
+                    if (checkIg.rows.length > 0) {
+                        const updateIgQuery = 'UPDATE social_accounts SET access_token = $1, page_name = $2, is_active = TRUE, updated_at = NOW() WHERE page_id = $3 AND user_id = $4 AND platform = $5';
+                        await pool.query(updateIgQuery, [page.access_token, igPageName, igId, userId, 'instagram']);
+                    } else {
+                        const insertIgQuery = 'INSERT INTO social_accounts (user_id, page_id, page_name, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5, $6)';
+                        await pool.query(insertIgQuery, [userId, igId, igPageName, page.access_token, true, 'instagram']);
+                    }
+                }
+            } catch (igErr) {
+                console.error(`Instagram fetch error for page ${page.id}:`, igErr.message);
+            }
+        }
         res.send(`<html><body style="font-family: Arial; text-align: center; padding: 50px;"><h2>🎉 ফেসবুক পেজ সফলভাবে কানেক্ট হয়েছে!</h2><p>ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p></body></html>`);
     } catch (error) {
         console.error("Facebook Auth Error:", error.response?.data || error.message);
