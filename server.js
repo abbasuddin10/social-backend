@@ -839,6 +839,106 @@ app.get('/auth/linkedin/callback', async (req, res) => {
     }
 });
 
+// ==========================================
+// 🐦 TWITTER (X) AUTH ROUTES
+// ==========================================
+app.get('/auth/twitter', (req, res) => {
+    const userId = req.query.user_id;
+    if (!userId) return res.status(400).send('❌ ত্রুটি: user_id প্রয়োজন!');
+
+    const clientId = process.env.TWITTER_CLIENT_ID;
+    const backendUrl = process.env.BACKEND_URL || 'https://social-backend-1hwz.onrender.com';
+
+    if (!clientId) {
+        return res.status(500).send('❌ ত্রুটি: সার্ভারে TWITTER_CLIENT_ID সেট করা নেই!');
+    }
+
+    const redirectUri = `${backendUrl}/auth/twitter/callback`;
+    const state = JSON.stringify({ user_id: userId });
+    
+    // OAuth 2.0 PKCE Scope
+    const scope = 'tweet.read tweet.write users.read offline.access';
+
+    const twitterLoginUrl = `https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}&code_challenge=challenge&code_challenge_method=plain`;
+
+    res.redirect(twitterLoginUrl);
+});
+
+app.get('/auth/twitter/callback', async (req, res) => {
+    const { code, state: stateStr } = req.query;
+    let userId = null;
+
+    try {
+        if (stateStr) userId = JSON.parse(stateStr).user_id;
+    } catch (e) { console.error("State parse error:", e); }
+
+    if (!code || !userId) return res.status(400).send('❌ অথেন্টিকেশন কোড বা ইউজার আইডি পাওয়া যায়নি।');
+
+    try {
+        const clientId = process.env.TWITTER_CLIENT_ID;
+        const clientSecret = process.env.TWITTER_CLIENT_SECRET;
+        const backendUrl = process.env.BACKEND_URL || 'https://social-backend-1hwz.onrender.com';
+        const redirectUri = `${backendUrl}/auth/twitter/callback`;
+
+        // Basic Auth Header encoding for Twitter API v2
+        const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+
+        const tokenResponse = await axios.post(
+            'https://api.twitter.com/2/oauth2/token',
+            new URLSearchParams({
+                code: code,
+                grant_type: 'authorization_code',
+                client_id: clientId,
+                redirect_uri: redirectUri,
+                code_verifier: 'challenge'
+            }).toString(),
+            {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Authorization': `Basic ${basicAuth}`
+                }
+            }
+        );
+
+        const { access_token, refresh_token, expires_in } = tokenResponse.data;
+        const expiresAt = new Date(Date.now() + expires_in * 1000);
+
+        // Fetch User Info
+        const profileResponse = await axios.get('https://api.twitter.com/2/users/me', {
+            headers: { Authorization: `Bearer ${access_token}` }
+        });
+
+        const twitterId = profileResponse.data.data.id;
+        const profileName = profileResponse.data.data.name || profileResponse.data.data.username || 'Twitter User';
+
+        const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2 AND platform = $3';
+        const existing = await pool.query(checkQuery, [twitterId, userId, 'twitter']);
+
+        if (existing.rows.length > 0) {
+            const updateQuery = 'UPDATE social_accounts SET access_token = $1, refresh_token = $2, expires_at = $3, page_name = $4, is_active = TRUE, updated_at = NOW() WHERE page_id = $5 AND user_id = $6 AND platform = $7';
+            await pool.query(updateQuery, [access_token, refresh_token, expiresAt, profileName, twitterId, userId, 'twitter']);
+        } else {
+            const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, page_name, access_token, refresh_token, expires_at, is_active, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)';
+            await pool.query(insertQuery, [userId, twitterId, profileName, access_token, refresh_token, expiresAt, true, 'twitter']);
+        }
+
+        res.send(`
+            <html>
+            <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px; background-color: #f4f6f9;">
+                <div style="max-width: 500px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+                    <h2 style="color: #1DA1F2;">🎉 Twitter (X) অ্যাকাউন্ট সফলভাবে কানেক্ট হয়েছে!</h2>
+                    <p style="color: #555;">ইউজার: <b>${profileName}</b></p>
+                    <p style="font-weight: bold;">ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p>
+                </div>
+            </body>
+            </html>
+        `);
+    } catch (error) {
+        console.error("Twitter Auth Error:", error.response?.data || error.message);
+        res.status(500).send('Twitter Authentication failed!');
+    }
+});
+
 app.post('/api/post-to-facebook', authenticateToken, async (req, res) => {
     const { page_id, message } = req.body;
     const userId = req.user.id;
@@ -907,13 +1007,14 @@ const uploadSingleFile = async (file, userId, reqHost) => {
 
 app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
     const userId = req.user.id;
-    const { mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
+    const { mode, content, facebook, instagram, pinterest, twitter, schedule_time } = req.body;
     const files = req.files || [];
 
     const platforms = {
         facebook: facebook === 'true',
         instagram: instagram === 'true',
-        pinterest: pinterest === 'true'
+        pinterest: pinterest === 'true',
+        twitter: twitter === 'true'
     };
 
     try {
@@ -1188,7 +1289,7 @@ CURRENT TIME REFERENCE: ${new Date().toISOString()}
 
 4. PLATFORM SELECTION RULE:
    - If the user specifies target platforms (e.g., "শুধু ফেসবুকে দাও"), set "platforms": ["facebook"].
-   - If the user DOES NOT specify platforms, DEFAULT TO ALL ACCOUNTS: ["facebook", "instagram", "pinterest", "linkedin"].
+   - If the user DOES NOT specify platforms, DEFAULT TO ALL ACCOUNTS: ["facebook", "instagram", "pinterest", "linkedin", "twitter"].
 
 5. DELETION RULES:
    - If user asks to clear/delete all posts (e.g., "আগের সব পোস্ট কেটে দাও"), set "intent": "DELETE_POSTS", "is_delete": true, and "delete_scope": "ALL_PENDING".
@@ -1206,7 +1307,7 @@ EXAMPLE JSON FOR "CREATE_POSTS":
     {
       "day_number": 1,
       "scheduled_at": "2026-08-27T10:00:00.000Z",
-      "platforms": ["facebook", "instagram", "pinterest", "linkedin"],
+      "platforms": ["facebook", "instagram", "pinterest", "linkedin", "twitter"],
       "content": "🚀 Tech Update Day 1: Engaging caption with emojis and relevant hashtags..."
     }
   ]
@@ -1262,7 +1363,7 @@ app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
           userId, 
           'ai_agent',
           post.content, 
-          JSON.stringify(post.platforms || { facebook: true, instagram: true, pinterest: true, linkedin: true }),
+          JSON.stringify(post.platforms || { facebook: true, instagram: true, pinterest: true, linkedin: true, twitter: true }),
           post.scheduled_at,
           post.images || []
         ]
