@@ -306,7 +306,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
         let hasConnectedInstagram = false;
 
         for (const page of pages) {
-            // ফেসবুক পেজ সেভ বা আপডেট
+            // ১. ফেসবুক পেজ সেভ বা আপডেট
             const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2';
             const existing = await pool.query(checkQuery, [page.id, userId]);
 
@@ -318,14 +318,16 @@ app.get('/auth/facebook/callback', async (req, res) => {
                 await pool.query(insertQuery, [userId, page.id, page.name, page.access_token, true, 'facebook']);
             }
 
-            // ইন্সটাগ্রাম একাউন্ট চেকিং
+            // ২. ইনস্টাগ্রাম অ্যাকাউন্ট ফেচ (ইনস্টাগ্রামের নিজস্ব নাম/ইউজারনেম তুলে আনা হচ্ছে)
             try {
-                const igUrl = `https://graph.facebook.com/v18.0/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`;
+                const igUrl = `https://graph.facebook.com/v18.0/${page.id}?fields=instagram_business_account{id,username,name}&access_token=${page.access_token}`;
                 const igResponse = await axios.get(igUrl);
                 
                 if (igResponse.data && igResponse.data.instagram_business_account) {
-                    const igId = igResponse.data.instagram_business_account.id;
-                    const igPageName = page.name; // এখানে ফেসবুক পেজের নামই দেখানো হচ্ছে
+                    const igData = igResponse.data.instagram_business_account;
+                    const igId = igData.id;
+                    // ইনস্টাগ্রামের নিজস্ব নাম (অথবা ইউজারনেম) সেভ হবে
+                    const igPageName = igData.name || igData.username || page.name;
 
                     const checkIg = await pool.query(
                         'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2 AND platform = $3', 
