@@ -8,6 +8,7 @@ const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
 const cron = require('node-cron');
+const crypto = require('crypto'); // 🔑 Twitter PKCE-এর জন্য যুক্ত করা হলো
 const { createClient } = require('@supabase/supabase-js');
 const { OAuth2Client } = require('google-auth-library');
 const { GoogleGenAI } = require('@google/genai');
@@ -840,7 +841,7 @@ app.get('/auth/linkedin/callback', async (req, res) => {
 });
 
 // ==========================================
-// 🐦 TWITTER (X) AUTH ROUTES
+// 🐦 TWITTER (X) AUTH ROUTES (FIXED PKCE)
 // ==========================================
 app.get('/auth/twitter', (req, res) => {
     const userId = req.query.user_id;
@@ -854,12 +855,15 @@ app.get('/auth/twitter', (req, res) => {
     }
 
     const redirectUri = `${backendUrl}/auth/twitter/callback`;
-    const state = JSON.stringify({ user_id: userId });
+    
+    // 🔑 dynamic code_verifier জেনারেট করা
+    const codeVerifier = crypto.randomBytes(32).toString('hex');
+    const state = JSON.stringify({ user_id: userId, code_verifier: codeVerifier });
     
     // OAuth 2.0 PKCE Scope
     const scope = 'tweet.read tweet.write users.read offline.access';
 
-    const twitterLoginUrl = `https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}&code_challenge=challenge&code_challenge_method=plain`;
+    const twitterLoginUrl = `https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}&code_challenge=${codeVerifier}&code_challenge_method=plain`;
 
     res.redirect(twitterLoginUrl);
 });
@@ -867,12 +871,21 @@ app.get('/auth/twitter', (req, res) => {
 app.get('/auth/twitter/callback', async (req, res) => {
     const { code, state: stateStr } = req.query;
     let userId = null;
+    let codeVerifier = null;
 
     try {
-        if (stateStr) userId = JSON.parse(stateStr).user_id;
-    } catch (e) { console.error("State parse error:", e); }
+        if (stateStr) {
+            const parsedState = JSON.parse(stateStr);
+            userId = parsedState.user_id;
+            codeVerifier = parsedState.code_verifier;
+        }
+    } catch (e) { 
+        console.error("State parse error:", e); 
+    }
 
-    if (!code || !userId) return res.status(400).send('❌ অথেন্টিকেশন কোড বা ইউজার আইডি পাওয়া যায়নি।');
+    if (!code || !userId || !codeVerifier) {
+        return res.status(400).send('❌ অথেন্টিকেশন কোড, ইউজার আইডি বা ভেরিফায়ার পাওয়া যায়নি।');
+    }
 
     try {
         const clientId = process.env.TWITTER_CLIENT_ID;
@@ -890,7 +903,7 @@ app.get('/auth/twitter/callback', async (req, res) => {
                 grant_type: 'authorization_code',
                 client_id: clientId,
                 redirect_uri: redirectUri,
-                code_verifier: 'challenge'
+                code_verifier: codeVerifier
             }).toString(),
             {
                 headers: {
