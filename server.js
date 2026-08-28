@@ -250,8 +250,9 @@ app.get('/auth/facebook', (req, res) => {
         return res.status(400).send('❌ ত্রুটি: ফেসবুক কানেক্ট করার জন্য user_id পাঠানো বাধ্যতামূলক!');
     }
 
-    const appId = process.env.FACEBOOK_APP_ID;
-    const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
+    const appId = process.env.FB_CLIENT_ID || process.env.FACEBOOK_APP_ID;
+    const backendUrl = process.env.BACKEND_URL || 'https://social-backend-1hwz.onrender.com';
+    const redirectUri = process.env.FB_REDIRECT_URI || `${backendUrl}/auth/facebook/callback`;
     const state = JSON.stringify({ user_id: userId });
 
     const scope = [
@@ -270,22 +271,39 @@ app.get('/auth/facebook', (req, res) => {
 
 // Facebook OAuth Callback Route
 app.get('/auth/facebook/callback', async (req, res) => {
-  const { code, state: userId } = req.query;
+  const { code, state: stateStr } = req.query;
+  let userId = null;
 
   try {
+      if (stateStr) {
+          const parsedState = JSON.parse(stateStr);
+          userId = parsedState.user_id;
+      }
+  } catch (e) {
+      userId = stateStr;
+  }
+
+  if (!code || !userId) {
+      return res.status(400).send('❌ অথেন্টিকেশন কোড বা ইউজার আইডি পাওয়া যায়নি।');
+  }
+
+  try {
+    const backendUrl = process.env.BACKEND_URL || 'https://social-backend-1hwz.onrender.com';
+    const redirectUri = process.env.FB_REDIRECT_URI || `${backendUrl}/auth/facebook/callback`;
+
     // ১. OAuth Code দিয়ে User Access Token নেওয়া
     const tokenResponse = await axios.get('https://graph.facebook.com/v18.0/oauth/access_token', {
       params: {
-        client_id: process.env.FB_CLIENT_ID,
+        client_id: process.env.FB_CLIENT_ID || process.env.FACEBOOK_APP_ID,
         client_secret: process.env.FB_CLIENT_SECRET,
-        redirect_uri: process.env.FB_REDIRECT_URI,
+        redirect_uri: redirectUri,
         code: code,
       },
     });
 
     const userAccessToken = tokenResponse.data.access_token;
 
-    // ২. യൂজার সাথে সম্পর্কিত ফেসবুক পেজ এবং লিঙ্কড ইনস্টাগ্রাম একাউন্ট ফেচ করা
+    // ২. ফেচ করা ফেসবুক পেজসমূহ
     const pagesResponse = await axios.get('https://graph.facebook.com/v18.0/me/accounts', {
       params: {
         fields: 'id,name,access_token,instagram_business_account',
@@ -303,25 +321,28 @@ app.get('/auth/facebook/callback', async (req, res) => {
       }));
     }
 
-    // ৩. প্রথম পেজটির ডাটা নিয়ে প্রসেস করা (অথবা একাধিক পেজ থাকলে লুপ করা যায়)
     const primaryPage = pages[0];
     let isInstagramConnected = false;
     let instagramData = null;
 
-    // 🎯 ফেসবুক পেজ সেভ/আপডেট (আপনার MongoDB/Database Logic)
-    await Database.saveFacebookPage({
-      userId: userId,
-      pageId: primaryPage.id,
-      pageName: primaryPage.name,
-      accessToken: primaryPage.access_token,
-      isConnected: true,
-    });
+    // 🎯 Postgres Neon ডাটাবেসে ফেসবুক পেজ সেভ/আপডেট
+    const fbCheck = await pool.query('SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2 AND platform = $3', [primaryPage.id, userId, 'facebook']);
+    if (fbCheck.rows.length > 0) {
+        await pool.query(
+            'UPDATE social_accounts SET access_token = $1, page_name = $2, is_active = TRUE, updated_at = NOW() WHERE page_id = $3 AND user_id = $4 AND platform = $5',
+            [primaryPage.access_token, primaryPage.name, primaryPage.id, userId, 'facebook']
+        );
+    } else {
+        await pool.query(
+            'INSERT INTO social_accounts (user_id, page_id, page_name, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5, $6)',
+            [userId, primaryPage.id, primaryPage.name, primaryPage.access_token, true, 'facebook']
+        );
+    }
 
     // 🎯 চেক করা এই পেজের সাথে Instagram Business Account লিঙ্ক করা আছে কিনা
     if (primaryPage.instagram_business_account) {
       const instagramAccountId = primaryPage.instagram_business_account.id;
 
-      // ইনস্টাগ্রাম অ্যাকাউন্ট ফেচ করা
       const igResponse = await axios.get(`https://graph.facebook.com/v18.0/${instagramAccountId}`, {
         params: {
           fields: 'id,username,name,profile_picture_url',
@@ -331,23 +352,23 @@ app.get('/auth/facebook/callback', async (req, res) => {
 
       instagramData = igResponse.data;
 
-      // ইনস্টাগ্রাম অ্যাকাউন্ট ডাটাবেজে সেভ
-      await Database.saveInstagramAccount({
-        userId: userId,
-        instagramId: instagramData.id,
-        username: instagramData.username,
-        name: instagramData.name || instagramData.username,
-        accessToken: primaryPage.access_token, // পেজ এক্সেস টোকেনই ইনস্টাগ্রামের জন্য ব্যবহৃত হয়
-        isConnected: true,
-      });
+      // Postgres Neon ডাটাবেসে ইনস্টাগ্রাম অ্যাকাউন্ট সেভ/আপডেট
+      const igCheck = await pool.query('SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2 AND platform = $3', [instagramData.id, userId, 'instagram']);
+      if (igCheck.rows.length > 0) {
+          await pool.query(
+              'UPDATE social_accounts SET access_token = $1, page_name = $2, is_active = TRUE, updated_at = NOW() WHERE page_id = $3 AND user_id = $4 AND platform = $5',
+              [primaryPage.access_token, instagramData.username, instagramData.id, userId, 'instagram']
+          );
+      } else {
+          await pool.query(
+              'INSERT INTO social_accounts (user_id, page_id, page_name, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5, $6)',
+              [userId, instagramData.id, instagramData.username, primaryPage.access_token, true, 'instagram']
+          );
+      }
 
       isInstagramConnected = true;
-    } else {
-      // যদি ইনস্টাগ্রাম না থাকে, ডাটাবেজে ডিসকানেক্টেড ফ্ল্যাগ রেখে দেওয়া
-      await Database.markInstagramDisconnected(userId);
     }
 
-    // ৪. ইউজারের জন্য ডাইনামিক এবং সুন্দর HTML ব্রাউজার রেসপন্স
     const title = isInstagramConnected
       ? '🎉 ফেসবুক ও ইনস্টাগ্রাম সফলভাবে কানেক্ট হয়েছে!'
       : '✅ ফেসবুক পেজ কানেক্ট হয়েছে!';
@@ -373,8 +394,6 @@ app.get('/auth/facebook/callback', async (req, res) => {
   }
 });
 
-
-// 🎨 ব্রাউজারে দেখানোর জন্য ক্লিন UI থিম তৈরি করার হেল্পার ফাংশন
 // 🎨 ব্রাউজারে দেখানোর জন্য ক্লিন UI থিম
 function renderResponseHtml({ title, message, isInstagramConnected = false, status = 'success' }) {
   const isWarning = status === 'warning' || (status === 'success' && !isInstagramConnected);
@@ -483,66 +502,7 @@ function renderResponseHtml({ title, message, isInstagramConnected = false, stat
 }
 
 // ==========================================
-// 💼 LINKEDIN AUTO REFRESH HELPER FUNCTION
-// ==========================================
-async function getValidLinkedinToken(userId) {
-    try {
-        const res = await pool.query(
-            "SELECT access_token, refresh_token, expires_at FROM social_accounts WHERE user_id = $1 AND platform = 'linkedin' AND is_active = TRUE",
-            [userId]
-        );
-
-        if (res.rows.length === 0) return null;
-        const account = res.rows[0];
-
-        // টোকেনের মেয়াদ শেষ হতে ৫ দিন বা তার কম বাকি থাকলে রিফ্রেশ করবে
-        const isExpiringSoon = account.expires_at && (new Date(account.expires_at) - new Date() < 5 * 24 * 60 * 60 * 1000);
-
-        if (isExpiringSoon && account.refresh_token) {
-            try {
-                const refreshRes = await axios.post('https://www.linkedin.com/oauth/v2/accessToken', null, {
-                    params: {
-                        grant_type: 'refresh_token',
-                        refresh_token: account.refresh_token,
-                        client_id: process.env.LINKEDIN_CLIENT_ID,
-                        client_secret: process.env.LINKEDIN_CLIENT_SECRET,
-                    },
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-                });
-
-                const newAccessToken = refreshRes.data.access_token;
-                const newRefreshToken = refreshRes.data.refresh_token || account.refresh_token;
-                const newExpiresAt = new Date(Date.now() + refreshRes.data.expires_in * 1000);
-
-                await pool.query(
-                    "UPDATE social_accounts SET access_token = $1, refresh_token = $2, expires_at = $3, updated_at = NOW() WHERE user_id = $4 AND platform = 'linkedin'",
-                    [newAccessToken, newRefreshToken, newExpiresAt, userId]
-                );
-
-                return newAccessToken;
-            } catch (e) {
-                console.error('LinkedIn Refresh Failed:', e.response?.data || e.message);
-
-                // ৪০১ বা ৪০৩ এরর দিলে পারমিশন বাতিলের কারণে ইজ এক্টিভ ফলস করে দেওয়া হবে
-                if (e.response && (e.response.status === 401 || e.response.status === 403)) {
-                    await pool.query(
-                        "UPDATE social_accounts SET is_active = FALSE WHERE user_id = $1 AND platform = 'linkedin'",
-                        [userId]
-                    );
-                }
-                return account.access_token;
-            }
-        }
-
-        return account.access_token;
-    } catch (err) {
-        console.error("Helper getValidLinkedinToken Error:", err);
-        return null;
-    }
-}
-
-// ==========================================
-// 💼 LINKEDIN AUTH ROUTES (আপডেট করা হয়েছে)
+// 💼 LINKEDIN AUTH ROUTES
 // ==========================================
 app.get('/auth/linkedin', (req, res) => {
     const userId = req.query.user_id;
@@ -593,7 +553,7 @@ app.get('/auth/linkedin/callback', async (req, res) => {
 
         const accessToken = tokenResponse.data.access_token;
         const refreshToken = tokenResponse.data.refresh_token || null;
-        const expiresIn = tokenResponse.data.expires_in || 5184000; // ৬০ দিনের ডিফল্ট হিসাব
+        const expiresIn = tokenResponse.data.expires_in || 5184000;
         const expiresAt = new Date(Date.now() + expiresIn * 1000);
 
         const profileResponse = await axios.get('https://api.linkedin.com/v2/userinfo', {
@@ -689,13 +649,13 @@ const uploadSingleFile = async (file, userId, reqHost) => {
 
 app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
     const userId = req.user.id;
-    const { mode, content, facebook, instagram, pinterest, schedule_time } = req.body;
+    const { mode, content, facebook, instagram, pinterest, linkedin, schedule_time } = req.body;
     const files = req.files || [];
 
     const platforms = {
-        facebook: facebook === 'true',
-        instagram: instagram === 'true',
-        pinterest: pinterest === 'true',
+        facebook: facebook === 'true' || facebook === true,
+        instagram: instagram === 'true' || instagram === true,
+        pinterest: pinterest === 'true' || pinterest === true,
         linkedin: linkedin === 'true' || linkedin === true
     };
 
@@ -946,47 +906,24 @@ CURRENT TIME REFERENCE: ${new Date().toISOString()}
    - "PAUSE_AUTOMATION": User wants to pause all automated posting temporarily.
 
 2. DURATION & POST COUNT LIMITS:
-   - Default Schedule Rule: If the user requests recurring or multi-day posts BUT DOES NOT specify the number of days or post count (e.g., "আমার জন্য নিয়মিত পোস্ট বানাও"), DEFAULT TO 7 DAYS (7 posts, 1 post per day).
-   - Instant Request Rule: If the user requests an instant post (e.g., "এখনই পোস্ট বানাও"), set scheduled_at to current time and total posts to 1.
-   - Absolute Maximum Limit: ABSOLUTELY MAXIMUM 30 DAYS / 30 POSTS. If the user asks for more than 30 days (e.g., "আগামী ৬০ দিনের জন্য" or "১ মাসের বেশি"), STRICTLY TRUNCATE / LIMIT OUTPUT TO 30 POSTS ONLY.
+   - Default Schedule Rule: If the user requests recurring or multi-day posts BUT DOES NOT specify the number of days or post count, DEFAULT TO 7 DAYS (7 posts, 1 post per day).
+   - Instant Request Rule: If the user requests an instant post, set scheduled_at to current time and total posts to 1.
+   - Absolute Maximum Limit: ABSOLUTELY MAXIMUM 30 DAYS / 30 POSTS. If the user asks for more than 30 days, STRICTLY TRUNCATE / LIMIT OUTPUT TO 30 POSTS ONLY.
 
 3. SMART TIMING (BEST TIME ALGORITHM):
-   - If the user specifies a time (e.g., "প্রতিদিন সকাল ৯টায়"), use that exact time.
-   - If the user DOES NOT specify a time, Gemini MUST act as a social media strategist and set optimal daily posting times (e.g., Peak Engagement Hours like 10:00 AM, 02:00 PM, or 08:00 PM local time) spread across consecutive days.
+   - If the user specifies a time, use that exact time.
+   - If the user DOES NOT specify a time, set optimal daily posting times spread across consecutive days.
 
 4. PLATFORM SELECTION RULE:
-   - If the user specifies target platforms (e.g., "শুধু ফেসবুকে দাও"), set "platforms": ["facebook"].
+   - If the user specifies target platforms, set "platforms": ["facebook"].
    - If the user DOES NOT specify platforms, DEFAULT TO ALL ACCOUNTS: ["facebook", "instagram", "pinterest", "linkedin"].
 
 5. DELETION RULES:
-   - If user asks to clear/delete all posts (e.g., "আগের সব পোস্ট কেটে দাও"), set "intent": "DELETE_POSTS", "is_delete": true, and "delete_scope": "ALL_PENDING".
-   - If user asks to delete specific posts (e.g., "গতকালের পোস্টটা কেটে দাও"), set "intent": "DELETE_POSTS", "is_delete": true, with "delete_scope": "SPECIFIC_DATE" and target date.
+   - If user asks to clear/delete all posts, set "intent": "DELETE_POSTS", "is_delete": true, and "delete_scope": "ALL_PENDING".
+   - If user asks to delete specific posts, set "intent": "DELETE_POSTS", "is_delete": true, with "delete_scope": "SPECIFIC_DATE" and target date.
 
 --- OUTPUT FORMAT REQUIREMENTS ---
 You MUST return ONLY raw valid JSON (no markdown formatting, no \`\`\`json wrappers).
-
-EXAMPLE JSON FOR "CREATE_POSTS":
-{
-  "intent": "CREATE_POSTS",
-  "is_delete": false,
-  "intent_summary": "Generated 7 daily tech posts starting from tomorrow at optimal engagement times.",
-  "posts": [
-    {
-      "day_number": 1,
-      "scheduled_at": "2026-08-27T10:00:00.000Z",
-      "platforms": ["facebook", "instagram", "pinterest", "linkedin"],
-      "content": "🚀 Tech Update Day 1: Engaging caption with emojis and relevant hashtags..."
-    }
-  ]
-}
-
-EXAMPLE JSON FOR "DELETE_POSTS":
-{
-  "intent": "DELETE_POSTS",
-  "is_delete": true,
-  "intent_summary": "Clearing all pending scheduled posts from the database per user request.",
-  "delete_scope": "ALL_PENDING"
-}
 
 USER COMMAND TO PROCESS: "${user_prompt}"
 `;
