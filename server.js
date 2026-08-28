@@ -254,7 +254,6 @@ app.get('/auth/facebook', (req, res) => {
     const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
     const state = JSON.stringify({ user_id: userId });
 
-    // 🎯 Scope-এ Instagram এবং ভবিষ্যতে লাইক/কমেন্ট রিড করার পারমিশন যুক্ত করা হয়েছে
     const scope = [
         'pages_show_list',
         'pages_manage_posts',
@@ -292,23 +291,19 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const appSecret = process.env.FACEBOOK_APP_SECRET;
         const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
 
-        // ১. Short-Lived Access Token গ্রহণ
         const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
         const tokenResponse = await axios.get(tokenUrl);
         const shortLivedToken = tokenResponse.data.access_token;
 
-        // ২. Long-Lived Access Token গ্রহণ (৬০ দিনের জন্য ভ্যালিড)
         const longLivedUrl = `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken}`;
         const longLivedResponse = await axios.get(longLivedUrl);
         const longLivedAccessToken = longLivedResponse.data.access_token;
 
-        // ৩. ইউজারের সব Facebook Page-এর লিস্ট ফেচ করা
         const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${longLivedAccessToken}`;
         const pagesResponse = await axios.get(pagesUrl);
         const pages = pagesResponse.data.data;
 
         for (const page of pages) {
-            // 📌 ৩.১ ফেসবুক পেজ সেভ বা আপডেট
             const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2';
             const existing = await pool.query(checkQuery, [page.id, userId]);
 
@@ -320,7 +315,6 @@ app.get('/auth/facebook/callback', async (req, res) => {
                 await pool.query(insertQuery, [userId, page.id, page.name, page.access_token, true, 'facebook']);
             }
 
-            // 📸 ৩.২ এই ফেসবুক পেজের সাথে লিঙ্কড থাকা Instagram Business Account চেক ও সেভ
             try {
                 const igUrl = `https://graph.facebook.com/v18.0/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`;
                 const igResponse = await axios.get(igUrl);
@@ -354,6 +348,76 @@ app.get('/auth/facebook/callback', async (req, res) => {
     }
 });
 
+// ==========================================
+// 💼 LINKEDIN AUTH ROUTES (যুক্ত করা হয়েছে)
+// ==========================================
+app.get('/auth/linkedin', (req, res) => {
+    const userId = req.query.user_id;
+    if (!userId) return res.status(400).send('❌ ত্রুটি: user_id প্রয়োজন!');
+
+    const clientId = process.env.LINKEDIN_CLIENT_ID;
+    const redirectUri = `${process.env.BACKEND_URL}/auth/linkedin/callback`;
+    const state = JSON.stringify({ user_id: userId });
+    const scope = 'openid profile w_member_social email';
+
+    const linkedinLoginUrl = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(scope)}`;
+    res.redirect(linkedinLoginUrl);
+});
+
+app.get('/auth/linkedin/callback', async (req, res) => {
+    const { code, state: stateStr } = req.query;
+    let userId = null;
+
+    try {
+        if (stateStr) userId = JSON.parse(stateStr).user_id;
+    } catch (e) { console.error("State parse error:", e); }
+
+    if (!code || !userId) return res.status(400).send('❌ অথেন্টিকেশন কোড বা ইউজার আইডি পাওয়া যায়নি।');
+
+    try {
+        const clientId = process.env.LINKEDIN_CLIENT_ID;
+        const clientSecret = process.env.LINKEDIN_CLIENT_SECRET;
+        const redirectUri = `${process.env.BACKEND_URL}/auth/linkedin/callback`;
+
+        const tokenResponse = await axios.post(
+            'https://www.linkedin.com/oauth/v2/accessToken',
+            new URLSearchParams({
+                grant_type: 'authorization_code',
+                code: code,
+                client_id: clientId,
+                client_secret: clientSecret,
+                redirect_uri: redirectUri
+            }).toString(),
+            { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+        );
+
+        const accessToken = tokenResponse.data.access_token;
+
+        const profileResponse = await axios.get('https://api.linkedin.com/v2/userinfo', {
+            headers: { Authorization: `Bearer ${accessToken}` }
+        });
+
+        const linkedinSub = profileResponse.data.sub;
+        const profileName = profileResponse.data.name || 'LinkedIn User';
+
+        const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2 AND platform = $3';
+        const existing = await pool.query(checkQuery, [linkedinSub, userId, 'linkedin']);
+
+        if (existing.rows.length > 0) {
+            const updateQuery = 'UPDATE social_accounts SET access_token = $1, page_name = $2, is_active = TRUE, updated_at = NOW() WHERE page_id = $3 AND user_id = $4 AND platform = $5';
+            await pool.query(updateQuery, [accessToken, profileName, linkedinSub, userId, 'linkedin']);
+        } else {
+            const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, page_name, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5, $6)';
+            await pool.query(insertQuery, [userId, linkedinSub, profileName, accessToken, true, 'linkedin']);
+        }
+
+        res.send(`<html><body style="font-family: Arial; text-align: center; padding: 50px;"><h2>🎉 LinkedIn অ্যাকাউন্ট সফলভাবে কানেক্ট হয়েছে!</h2><p>ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p></body></html>`);
+    } catch (error) {
+        console.error("LinkedIn Auth Error:", error.response?.data || error.message);
+        res.status(500).send('LinkedIn Authentication failed!');
+    }
+});
+
 app.post('/api/post-to-facebook', authenticateToken, async (req, res) => {
     const { page_id, message } = req.body;
     const userId = req.user.id;
@@ -375,6 +439,7 @@ app.post('/api/post-to-facebook', authenticateToken, async (req, res) => {
         res.status(500).json({ error: error.response?.data || error.message });
     }
 });
+
 // ==========================================
 // 🚀 POST SAVING & SCHEDULING (WITH SUPABASE)
 // ==========================================
@@ -580,7 +645,7 @@ app.post('/auth/disconnect', async (req, res) => {
     }
 });
 
-// 🎯 AI Caption Generator Endpoint (Secured with authenticateToken)
+// 🎯 AI Caption Generator Endpoint
 app.post('/api/generate-caption', authenticateToken, async (req, res) => {
     try {
         const { prompt } = req.body;
@@ -591,7 +656,6 @@ app.post('/api/generate-caption', authenticateToken, async (req, res) => {
             contents: `Act as a professional social media manager. Based on this topic/description: "${prompt}", write ONLY ONE single, ready-to-publish, engaging social media post with hashtags and emojis. Do not add intro/outro text.`,
         });
 
-        // Ensure text extraction is safe
         const generatedText = typeof response.text === 'function' ? await response.text() : response.text;
 
         return res.status(200).json({
@@ -609,7 +673,6 @@ app.get('/api/user/profile', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
         
-        // ইউজার ইনফরমেশন আনা
         const userQuery = 'SELECT id, email, name, profile_pic, created_at FROM users WHERE id = $1';
         const userResult = await pool.query(userQuery, [userId]);
 
@@ -617,7 +680,6 @@ app.get('/api/user/profile', authenticateToken, async (req, res) => {
             return res.status(404).json({ success: false, message: 'ইউজার পাওয়া যায়নি!' });
         }
 
-        // কানেক্ট করা সোশ্যাল একাউন্ট লিস্ট আনা
         const accountsQuery = 'SELECT platform, page_id, page_name, is_active FROM social_accounts WHERE user_id = $1';
         const accountsResult = await pool.query(accountsQuery, [userId]);
 
@@ -632,7 +694,7 @@ app.get('/api/user/profile', authenticateToken, async (req, res) => {
     }
 });
 
-// 📝 ২. ইউজার প্রোফাইল (নাম ও প্রফাইল পিকচার) আপডেট করা
+// 📝 ২. ইউজার প্রোফাইল আপডেট করা
 app.put('/api/user/profile', authenticateToken, async (req, res) => {
     const { name, profile_pic } = req.body;
     const userId = req.user.id;
@@ -660,6 +722,7 @@ app.put('/api/user/profile', authenticateToken, async (req, res) => {
 
 // ==========================================
 // 🤖 AUTOMATION RULE SAVING ROUTE
+// ==========================================
 app.post('/api/generate-user-plan', async (req, res) => {
   try {
     const { user_prompt } = req.body;
@@ -689,7 +752,7 @@ CURRENT TIME REFERENCE: ${new Date().toISOString()}
 
 4. PLATFORM SELECTION RULE:
    - If the user specifies target platforms (e.g., "শুধু ফেসবুকে দাও"), set "platforms": ["facebook"].
-   - If the user DOES NOT specify platforms, DEFAULT TO ALL ACCOUNTS: ["facebook", "instagram", "pinterest"].
+   - If the user DOES NOT specify platforms, DEFAULT TO ALL ACCOUNTS: ["facebook", "instagram", "pinterest", "linkedin"].
 
 5. DELETION RULES:
    - If user asks to clear/delete all posts (e.g., "আগের সব পোস্ট কেটে দাও"), set "intent": "DELETE_POSTS", "is_delete": true, and "delete_scope": "ALL_PENDING".
@@ -707,7 +770,7 @@ EXAMPLE JSON FOR "CREATE_POSTS":
     {
       "day_number": 1,
       "scheduled_at": "2026-08-27T10:00:00.000Z",
-      "platforms": ["facebook", "instagram", "pinterest"],
+      "platforms": ["facebook", "instagram", "pinterest", "linkedin"],
       "content": "🚀 Tech Update Day 1: Engaging caption with emojis and relevant hashtags..."
     }
   ]
@@ -724,13 +787,11 @@ EXAMPLE JSON FOR "DELETE_POSTS":
 USER COMMAND TO PROCESS: "${user_prompt}"
 `;
 
-    // Calling Gemini 3.6 Flash
     const response = await ai.models.generateContent({
       model: 'gemini-3.6-flash',
       contents: systemPrompt,
     });
 
-    // Cleaning JSON response
     const cleanJsonText = response.text.replace(/```json|```/g, '').trim();
     const parsedPlan = JSON.parse(cleanJsonText);
 
@@ -743,7 +804,7 @@ USER COMMAND TO PROCESS: "${user_prompt}"
   }
 });
 
-// 🎯 Confirm & Save All Posts API (Updated to user_posts)
+// 🎯 Confirm & Save All Posts API
 app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
   try {
     const { posts } = req.body;
@@ -765,7 +826,7 @@ app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
           userId, 
           'ai_agent',
           post.content, 
-          JSON.stringify(post.platforms || { facebook: true, instagram: true, pinterest: true }),
+          JSON.stringify(post.platforms || { facebook: true, instagram: true, pinterest: true, linkedin: true }),
           post.scheduled_at,
           post.images || []
         ]
@@ -783,11 +844,11 @@ app.post('/api/confirm-save-plan', authenticateToken, async (req, res) => {
   }
 });
 
-// 🎯 ডাটাবেস থেকে ইউজারের পোস্ট ফেস (GET) করার API (Updated to user_posts)
+// 🎯 ডাটাবেস থেকে ইউজারের পোস্ট ফেচ API
 app.get('/api/get-scheduled-posts', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const requestedMode = req.query.mode; // 👈 ফ্রন্টএন্ড থেকে ?mode=ai_agent বা ?mode=schedule ফিল্টার ডাটা রিসিভ করবে
+    const requestedMode = req.query.mode;
 
     let query = `
       SELECT id, content, mode, schedule_time AS scheduled_at, platforms AS target_platforms, images, is_posted 
@@ -797,7 +858,6 @@ app.get('/api/get-scheduled-posts', authenticateToken, async (req, res) => {
     
     const queryParams = [userId];
 
-    // যদি ফ্রন্টএন্ড থেকে specific কোনো mode চাওয়া হয় (যেমন: ai_agent বা schedule)
     if (requestedMode) {
       queryParams.push(requestedMode);
       query += ` AND mode = $${queryParams.length}`;
@@ -817,7 +877,7 @@ app.get('/api/get-scheduled-posts', authenticateToken, async (req, res) => {
   }
 });
 
-// 🎯 ১. Single Post Delete API (Updated to user_posts)
+// 🎯 ১. Single Post Delete API
 app.delete('/api/delete-post/:id', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -832,14 +892,14 @@ app.delete('/api/delete-post/:id', authenticateToken, async (req, res) => {
       return res.status(404).json({ success: false, message: 'পোস্টটি পাওয়া যায়নি বা অ্যাক্সেস নেই!' });
     }
 
-    res.status(200).json({ success: true, message: 'পোস্টটি সফলতা সাথে মুছে ফেলা হয়েছে!' });
+    res.status(200).json({ success: true, message: 'পোস্টটি সফলতার সাথে মুছে ফেলা হয়েছে!' });
   } catch (error) {
     console.error("Delete Error:", error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// 🎯 ২. Single Post Edit/Update API (Updated to support image + content updates)
+// 🎯 ২. Single Post Edit/Update API
 app.put('/api/update-post/:id', authenticateToken, upload.array('images'), async (req, res) => {
   try {
     const userId = req.user.id;
@@ -847,7 +907,6 @@ app.put('/api/update-post/:id', authenticateToken, upload.array('images'), async
     const { content, target_platforms, scheduled_at } = req.body;
     const files = req.files || [];
 
-    // নতুন ইমেজ পাঠানো হয়ে থাকলে Supabase/Local এ আপলোড হবে
     let updatedImages = null;
     if (files.length > 0) {
       updatedImages = [];
@@ -893,7 +952,7 @@ app.put('/api/update-post/:id', authenticateToken, upload.array('images'), async
   }
 });
 
-// 🎯 Delete All Scheduled Posts for current user (Updated to user_posts)
+// 🎯 Delete All Scheduled Posts for current user
 app.delete('/api/delete-all-posts', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
