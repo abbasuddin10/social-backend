@@ -829,19 +829,32 @@ app.get('/user/accounts', async (req, res) => {
     }
 
     try {
+        // ১. সোশ্যাল অ্যাকাউন্টস ফেচ
         const query = 'SELECT platform, page_id, page_name, is_active FROM social_accounts WHERE user_id = $1::INTEGER';
         const result = await pool.query(query, [userId]);
+        const accounts = result.rows;
+
+        // ২. users টেবিল থেকে WhatsApp নম্বরটি ফেচ করে যুক্ত করা
+        const userQuery = 'SELECT whatsapp_number FROM users WHERE id = $1::INTEGER';
+        const userRes = await pool.query(userQuery, [userId]);
+
+        if (userRes.rows.length > 0 && userRes.rows[0].whatsapp_number) {
+            accounts.push({
+                platform: 'whatsapp',
+                page_name: userRes.rows[0].whatsapp_number,
+                is_active: true
+            });
+        }
 
         res.status(200).json({
             success: true,
-            accounts: result.rows
+            accounts: accounts
         });
     } catch (err) {
         console.error('Fetch Accounts Error:', err);
         res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
     }
 });
-
 app.post('/auth/disconnect', async (req, res) => {
     const { user_id, platform, page_id } = req.body;
 
