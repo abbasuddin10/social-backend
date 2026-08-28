@@ -1079,6 +1079,126 @@ app.delete('/api/delete-all-posts', authenticateToken, async (req, res) => {
   }
 });
 
+// ==========================================
+// 🎥 YOUTUBE AUTH ROUTES
+// ==========================================
+
+// ১. ইউটিউব লগইন/কানেক্ট লিঙ্ক
+app.get('/auth/youtube', (req, res) => {
+    const userId = req.query.user_id;
+
+    if (!userId) {
+        return res.status(400).send('❌ ত্রুটি: user_id পাঠানো বাধ্যতামূলক!');
+    }
+
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const backendUrl = process.env.BACKEND_URL || 'https://social-backend-1hwz.onrender.com';
+    const redirectUri = `${backendUrl}/auth/youtube/callback`;
+    const state = JSON.stringify({ user_id: userId });
+
+    // ইউটিউবে কন্টেন্ট আপলোড ও চ্যানেল তথ্য দেখার স্কোপ
+    const scopes = [
+        'https://www.googleapis.com/auth/youtube.upload',
+        'https://www.googleapis.com/auth/youtube.readonly'
+    ].join(' ');
+
+    const youtubeLoginUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scopes)}&access_type=offline&prompt=consent&state=${encodeURIComponent(state)}`;
+
+    res.redirect(youtubeLoginUrl);
+});
+
+// ২. ইউটিউব কলব্যাক এবং ডাটাবেসে সেভ
+app.get('/auth/youtube/callback', async (req, res) => {
+    const { code, state: stateStr } = req.query;
+    let userId = null;
+
+    try {
+        if (stateStr) {
+            userId = JSON.parse(stateStr).user_id;
+        }
+    } catch (e) {
+        console.error("State parse error:", e);
+    }
+
+    if (!code || !userId) {
+        return res.status(400).send('❌ ত্রুটি: অথেন্টিকেশন কোড বা ইউজার আইডি পাওয়া যায়নি।');
+    }
+
+    try {
+        const clientId = process.env.GOOGLE_CLIENT_ID;
+        const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+        const backendUrl = process.env.BACKEND_URL || 'https://social-backend-1hwz.onrender.com';
+        const redirectUri = `${backendUrl}/auth/youtube/callback`;
+
+        // টোকেন এক্সচেঞ্জ
+        const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', new URLSearchParams({
+            code: code,
+            client_id: clientId,
+            client_secret: clientSecret,
+            redirect_uri: redirectUri,
+            grant_type: 'authorization_code'
+        }).toString(), {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+        });
+
+        const { access_token, refresh_token, expires_in } = tokenResponse.data;
+        const expiresAt = new Date(Date.now() + expires_in * 1000);
+
+        // ইউটিউব চ্যানেলের তথ্য তুলে আনা
+        const channelResponse = await axios.get('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', {
+            headers: { Authorization: `Bearer ${access_token}` }
+        });
+
+        const channel = channelResponse.data.items?.[0];
+
+        if (!channel) {
+            return res.status(404).send('❌ কোনো ইউটিউব চ্যানেল পাওয়া যায়নি!');
+        }
+
+        const channelId = channel.id;
+        const channelName = channel.snippet.title;
+
+        // ডাটাবেসে চেক ও সেভ
+        const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2 AND platform = $3';
+        const existing = await pool.query(checkQuery, [channelId, userId, 'youtube']);
+
+        if (existing.rows.length > 0) {
+            const updateQuery = `
+                UPDATE social_accounts 
+                SET access_token = $1, 
+                    refresh_token = COALESCE($2, refresh_token), 
+                    expires_at = $3, 
+                    page_name = $4, 
+                    is_active = TRUE, 
+                    updated_at = NOW() 
+                WHERE page_id = $5 AND user_id = $6 AND platform = 'youtube'
+            `;
+            await pool.query(updateQuery, [access_token, refresh_token, expiresAt, channelName, channelId, userId]);
+        } else {
+            const insertQuery = `
+                INSERT INTO social_accounts (user_id, page_id, page_name, access_token, refresh_token, expires_at, is_active, platform) 
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            `;
+            await pool.query(insertQuery, [userId, channelId, channelName, access_token, refresh_token, expiresAt, true, 'youtube']);
+        }
+
+        res.send(`
+            <html>
+            <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px; background-color: #f4f6f9;">
+                <div style="max-width: 500px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+                    <h2 style="color: #cc0000;">🎉 YouTube চ্যানেল সফলভাবে কানেক্ট হয়েছে!</h2>
+                    <p style="color: #555;">চ্যানেল: <b>${channelName}</b></p>
+                    <p style="font-weight: bold;">ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p>
+                </div>
+            </body>
+            </html>
+        `);
+    } catch (error) {
+        console.error("YouTube Auth Error:", error.response?.data || error.message);
+        res.status(500).send('YouTube Authentication failed!');
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`সার্ভার সফলভাবে পোর্ট ${PORT}-এ রান হচ্ছে!`);
