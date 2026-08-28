@@ -561,7 +561,8 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
     const platforms = {
         facebook: facebook === 'true',
         instagram: instagram === 'true',
-        pinterest: pinterest === 'true'
+        pinterest: pinterest === 'true',
+        linkedin: linkedin === 'true' || linkedin === true
     };
 
     try {
