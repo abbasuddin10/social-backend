@@ -114,13 +114,206 @@ app.post('/api/user/update-whatsapp', authenticateToken, async (req, res) => {
         // কানেক্ট হওয়ার সাথে সাথে একটি টেস্ট নোটিফিকেশন মেসেজ সেন্ড
         await sendWhatsAppMessage(
             whatsappNumber, 
-            "🎉 আপনার AFARZ Automation-এ WhatsApp অ্যাকাউন্ট সফলভাবে যুক্ত হয়েছে! এখন থেকে আপনি প্রতিদিন বিজনেসের আপডেট পাবেন।"
+            "🎉 আপনার AFARZ Automation-এ WhatsApp অ্যাকাউন্ট সফলভাবে যুক্ত হয়েছে! এখন থেকে আপনি যেকোনো সময় বিজনেসের আপডেট জানতে মেসেজ দিতে পারেন।"
         );
 
         res.json({ success: true, message: 'WhatsApp connected successfully!' });
     } catch (err) {
         console.error("Update WhatsApp Error:", err);
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ==========================================
+// 📊 AI BUSINESS ANALYTICS & WEBHOOK LOGIC
+// ==========================================
+
+// ১. সোশ্যাল মিডিয়া পারফরম্যান্স ডাটা ফেচিং (Meta Graph API)
+async function getSocialAnalytics(pageId, pageAccessToken) {
+    try {
+        const url = `https://graph.facebook.com/v18.0/${pageId}/posts?fields=id,message,created_time,likes.summary(true),comments.summary(true),permalink_url&limit=10&access_token=${pageAccessToken}`;
+        const response = await axios.get(url);
+        const posts = response.data.data;
+
+        if (!posts || posts.length === 0) return null;
+
+        let totalLikes = 0;
+        let totalComments = 0;
+        let topLikedPost = posts[0];
+        let topCommentedPost = posts[0];
+
+        posts.forEach(post => {
+            const likes = post.likes?.summary?.total_count || 0;
+            const comments = post.comments?.summary?.total_count || 0;
+
+            totalLikes += likes;
+            totalComments += comments;
+
+            if (likes > (topLikedPost.likes?.summary?.total_count || 0)) {
+                topLikedPost = post;
+            }
+            if (comments > (topCommentedPost.comments?.summary?.total_count || 0)) {
+                topCommentedPost = post;
+            }
+        });
+
+        return {
+            totalPostsAnalyzed: posts.length,
+            totalLikes,
+            totalComments,
+            topLikedPost: {
+                caption: topLikedPost.message || "No Caption",
+                likes: topLikedPost.likes?.summary?.total_count || 0,
+                comments: topLikedPost.comments?.summary?.total_count || 0,
+                link: topLikedPost.permalink_url,
+                createdTime: topLikedPost.created_time
+            },
+            topCommentedPost: {
+                caption: topCommentedPost.message || "No Caption",
+                likes: topCommentedPost.likes?.summary?.total_count || 0,
+                comments: topCommentedPost.comments?.summary?.total_count || 0,
+                link: topCommentedPost.permalink_url
+            }
+        };
+    } catch (err) {
+        console.error("Meta API Fetch Error:", err.response?.data || err.message);
+        return null;
+    }
+}
+
+// ২. ডাটাবেস থেকে সেলস ও অর্ডারের আপডেট ডাটা ফেচিং (Neon Postgres)
+async function getDatabaseAnalytics(userId) {
+    try {
+        const today = new Date().toISOString().split('T')[0];
+
+        // আজকের মোট অর্ডার ও সেলস অ্যামাউন্ট
+        const orderQuery = `
+            SELECT COUNT(*) as total_orders, COALESCE(SUM(amount), 0) as total_revenue 
+            FROM orders_leads 
+            WHERE user_id = $1 AND DATE(created_at) = $2
+        `;
+        const orderRes = await pool.query(orderQuery, [userId, today]);
+
+        // অল-টাইম টপ সেলিং প্রোডাক্ট
+        const bestSellerQuery = `
+            SELECT product_name, COUNT(*) as total_sales 
+            FROM orders_leads 
+            WHERE user_id = $1 
+            GROUP BY product_name 
+            ORDER BY total_sales DESC 
+            LIMIT 1
+        `;
+        const bestSellerRes = await pool.query(bestSellerQuery, [userId]);
+
+        return {
+            todayOrders: parseInt(orderRes.rows[0].total_orders || 0),
+            todayRevenue: parseFloat(orderRes.rows[0].total_revenue || 0),
+            bestSeller: bestSellerRes.rows[0] ? bestSellerRes.rows[0].product_name : "N/A",
+            bestSellerCount: bestSellerRes.rows[0] ? parseInt(bestSellerRes.rows[0].total_sales) : 0
+        };
+    } catch (err) {
+        console.error("DB Query Error:", err);
+        return null;
+    }
+}
+
+// ৩. Gemini AI দ্বারা ইউজারের প্রশ্ন বিশ্লেষণ ও রেসপন্স তৈরি
+async function processUserQueryWithGemini(userMessage, socialData, dbData) {
+    try {
+        const contextData = {
+            social: socialData || "Social media data not available",
+            sales: dbData || "Sales database data not available"
+        };
+
+        const systemPrompt = `
+You are an intelligent business assistant responding to a shop owner via WhatsApp.
+Here is the current live data of the user's business:
+${JSON.stringify(contextData, null, 2)}
+
+User's incoming WhatsApp message: "${userMessage}"
+
+Tasks:
+1. Understand what the user is asking about (e.g., top post, total likes, total comments, best views/reach, total orders, best-selling product, overall business summary).
+2. Answer the user's question clearly, concisely, and accurately in standard Bengali (with relevant emojis).
+3. Use bullet points and clean formatting suitable for WhatsApp (e.g., bold with *text*).
+4. Do NOT invent numbers; rely strictly on the provided JSON data.
+
+Generate ONLY the final WhatsApp message text response:
+`;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-3.6-flash',
+            contents: systemPrompt
+        });
+
+        const generatedText = typeof response.text === 'function' ? await response.text() : response.text;
+        return generatedText.trim();
+    } catch (err) {
+        console.error("Gemini AI Processing Error:", err);
+        return "🤖 দুঃখিত, ডাটা প্রসেস করতে একটি সাময়িক সমস্যা হয়েছে। কিছুক্ষণ পর আবার চেষ্টা করুন।";
+    }
+}
+
+// 📩 ৪. WHATSAPP WEBHOOK ROUTES (রিয়েল-টাইম ইন্টারেক্টিভ রিপ্লাইয়ের জন্য)
+
+// Webhook Verification (Meta-র জন্য)
+app.get('/webhook/whatsapp', (req, res) => {
+    const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN || 'my_secret_token';
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    if (mode && token === verifyToken) {
+        res.status(200).send(challenge);
+    } else {
+        res.sendStatus(403);
+    }
+});
+
+// Incoming WhatsApp Message Receiver & Auto-Responder
+app.post('/webhook/whatsapp', async (req, res) => {
+    try {
+        const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+
+        if (message && message.type === 'text') {
+            const userPhone = message.from; // ইউজারের মোবাইল নম্বর
+            const userText = message.text.body; // ইউজারের পাঠানো মেসেজ
+
+            // ১. ডাটাবেস থেকে ইউজার ও ফেসবুক পেজ এক্সেস টোকেন বের করা
+            const cleanPhone = userPhone.replace(/^\+/, '');
+            const userRes = await pool.query(
+                `SELECT u.id, s.page_id, s.access_token 
+                 FROM users u 
+                 LEFT JOIN social_accounts s ON u.id = s.user_id AND s.platform = 'facebook'
+                 WHERE u.whatsapp_number = $1 OR u.whatsapp_number = $2 OR u.whatsapp_number = $3
+                 LIMIT 1`,
+                [userPhone, `+${userPhone}`, cleanPhone]
+            );
+
+            if (userRes.rows.length === 0) {
+                console.log("Registered user not found for phone:", userPhone);
+                return res.sendStatus(200);
+            }
+
+            const { id: userId, page_id: pageId, access_token: pageToken } = userRes.rows[0];
+
+            // ২. সোশ্যাল স্ট্যাটস ও ডাটাবেস স্ট্যাটস একসাথে ফেচ করা
+            const [socialStats, dbStats] = await Promise.all([
+                pageId && pageToken ? getSocialAnalytics(pageId, pageToken) : null,
+                getDatabaseAnalytics(userId)
+            ]);
+
+            // ৩. Gemini AI দিয়ে ইউজারের প্রশ্নের উত্তর জেনারেট করা
+            const finalReply = await processUserQueryWithGemini(userText, socialStats, dbStats);
+
+            // ৪. হোয়াটসঅ্যাপে ব্যাক অ্যান্সার পাঠানো
+            await sendWhatsAppMessage(userPhone, finalReply);
+        }
+
+        res.sendStatus(200);
+    } catch (error) {
+        console.error("Webhook Handling Error:", error);
+        res.sendStatus(500);
     }
 });
 
@@ -855,6 +1048,7 @@ app.get('/user/accounts', async (req, res) => {
         res.status(500).json({ success: false, message: 'সার্ভার সমস্যা: ' + err.message });
     }
 });
+
 app.post('/auth/disconnect', async (req, res) => {
     const { user_id, platform, page_id } = req.body;
 
