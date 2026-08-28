@@ -7,6 +7,7 @@ const upload = multer({ dest: 'uploads/' });
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const fs = require('fs');
+const cron = require('node-cron');
 const { createClient } = require('@supabase/supabase-js');
 const { OAuth2Client } = require('google-auth-library');
 const { GoogleGenAI } = require('@google/genai');
@@ -54,6 +55,121 @@ const authenticateToken = (req, res, next) => {
 
 app.get('/', (req, res) => {
     res.send('Node.js Backend Server with Neon DB is running!');
+});
+
+// ==========================================
+// 💬 WHATSAPP HELPER & SERVICES
+// ==========================================
+
+// 📩 হোয়াটসঅ্যাপে টেক্সট মেসেজ পাঠানোর গ্লোবাল ফাংশন
+async function sendWhatsAppMessage(toPhoneNumber, messageBody) {
+    try {
+        const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+        const token = process.env.WHATSAPP_ACCESS_TOKEN;
+
+        if (!phoneId || !token) {
+            console.error("❌ WHATSAPP_PHONE_NUMBER_ID or WHATSAPP_ACCESS_TOKEN is missing in environment variables!");
+            return { success: false, error: "Environment variables missing" };
+        }
+
+        const url = `https://graph.facebook.com/v19.0/${phoneId}/messages`;
+
+        const payload = {
+            messaging_product: "whatsapp",
+            to: toPhoneNumber,
+            type: "text",
+            text: { body: messageBody }
+        };
+
+        const response = await axios.post(url, payload, {
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        console.log(`✅ WhatsApp Sent to ${toPhoneNumber}:`, response.data.messages[0].id);
+        return { success: true, data: response.data };
+    } catch (error) {
+        console.error("❌ WhatsApp Error:", error.response?.data || error.message);
+        return { success: false, error: error.response?.data || error.message };
+    }
+}
+
+// 📱 ইউজারের হোয়াটসঅ্যাপ নম্বর আপডেট ও ভেরিফাই করার API (Flutter APP/Postman-এর জন্য)
+app.post('/api/user/update-whatsapp', authenticateToken, async (req, res) => {
+    const { whatsappNumber } = req.body;
+    const userId = req.user.id;
+
+    if (!whatsappNumber) {
+        return res.status(400).json({ success: false, message: 'WhatsApp Number is required!' });
+    }
+
+    try {
+        await pool.query(
+            'UPDATE users SET whatsapp_number = $1 WHERE id = $2',
+            [whatsappNumber, userId]
+        );
+
+        // কানেক্ট হওয়ার সাথে সাথে একটি টেস্ট নোটিফিকেশন মেসেজ সেন্ড
+        await sendWhatsAppMessage(
+            whatsappNumber, 
+            "🎉 আপনার AFARZ Automation-এ WhatsApp অ্যাকাউন্ট সফলভাবে যুক্ত হয়েছে! এখন থেকে আপনি প্রতিদিন বিজনেসের আপডেট পাবেন।"
+        );
+
+        res.json({ success: true, message: 'WhatsApp connected successfully!' });
+    } catch (err) {
+        console.error("Update WhatsApp Error:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ⏰ অটোমেটিক ডেইলি বিজনেস রিপোর্ট Cron Job (প্রতিদিন রাত ৯:০০ টায় রান হবে)
+cron.schedule('0 21 * * *', async () => {
+    console.log('📊 Generating & Sending WhatsApp Business Reports...');
+
+    try {
+        const usersRes = await pool.query(
+            "SELECT id, email, name, whatsapp_number FROM users WHERE whatsapp_number IS NOT NULL AND whatsapp_number != ''"
+        );
+
+        for (const user of usersRes.rows) {
+            const today = new Date().toISOString().split('T')[0];
+
+            // ১. আজকের দিনে কতগুলো পোস্ট হয়েছে
+            const publishedRes = await pool.query(
+                "SELECT COUNT(*) FROM user_posts WHERE user_id = $1 AND DATE(schedule_time) = $2 AND is_posted = TRUE",
+                [user.id, today]
+            );
+
+            // ২. আগামীকালের জন্য পেন্ডিং পোস্ট
+            const upcomingRes = await pool.query(
+                "SELECT COUNT(*) FROM user_posts WHERE user_id = $1 AND schedule_time > NOW() AND is_posted = FALSE",
+                [user.id]
+            );
+
+            // 📝 বিজনেস রিপোর্ট মেসেজের ফরম্যাট
+            const report = `
+📊 *[AFARZ Automation] - Daily Summary*
+📅 *তারিখ:* ${today}
+👤 *ইউজার:* ${user.name || user.email}
+
+----------------------------------------
+✅ *আজকের আপডেট:*
+• সফল পোস্ট: *${publishedRes.rows[0].count} টি*
+
+⏳ *আগামী আপডেট:*
+• পেন্ডিং/শিডিউল পোস্ট: *${upcomingRes.rows[0].count} টি*
+
+----------------------------------------
+_ধন্যবাদ, AFARZ Automation ব্যবহার করার জন্য!_ 🚀
+`;
+
+            await sendWhatsAppMessage(user.whatsapp_number, report);
+        }
+    } catch (err) {
+        console.error("Cron Job Error:", err);
+    }
 });
 
 // ==========================================
@@ -318,7 +434,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
                 await pool.query(insertQuery, [userId, page.id, page.name, page.access_token, true, 'facebook']);
             }
 
-            // ২. ইনস্টাগ্রাম অ্যাকাউন্ট ফেচ (ইনস্টাগ্রামের নিজস্ব নাম/ইউজারনেম তুলে আনা হচ্ছে)
+            // ২. ইনস্টাগ্রাম অ্যাকাউন্ট ফেচ
             try {
                 const igUrl = `https://graph.facebook.com/v18.0/${page.id}?fields=instagram_business_account{id,username,name}&access_token=${page.access_token}`;
                 const igResponse = await axios.get(igUrl);
@@ -326,7 +442,6 @@ app.get('/auth/facebook/callback', async (req, res) => {
                 if (igResponse.data && igResponse.data.instagram_business_account) {
                     const igData = igResponse.data.instagram_business_account;
                     const igId = igData.id;
-                    // ইনস্টাগ্রামের নিজস্ব নাম (অথবা ইউজারনেম) সেভ হবে
                     const igPageName = igData.name || igData.username || page.name;
 
                     const checkIg = await pool.query(
@@ -407,7 +522,6 @@ async function getValidLinkedinToken(userId) {
         if (res.rows.length === 0) return null;
         const account = res.rows[0];
 
-        // টোকেনের মেয়াদ শেষ হতে ৫ দিন বা তার কম বাকি থাকলে রিফ্রেশ করবে
         const isExpiringSoon = account.expires_at && (new Date(account.expires_at) - new Date() < 5 * 24 * 60 * 60 * 1000);
 
         if (isExpiringSoon && account.refresh_token) {
@@ -435,7 +549,6 @@ async function getValidLinkedinToken(userId) {
             } catch (e) {
                 console.error('LinkedIn Refresh Failed:', e.response?.data || e.message);
 
-                // ৪০১ বা ৪০৩ এরর দিলে পারমিশন বাতিলের কারণে ইজ এক্টিভ ফলস করে দেওয়া হবে
                 if (e.response && (e.response.status === 401 || e.response.status === 403)) {
                     await pool.query(
                         "UPDATE social_accounts SET is_active = FALSE WHERE user_id = $1 AND platform = 'linkedin'",
@@ -454,7 +567,7 @@ async function getValidLinkedinToken(userId) {
 }
 
 // ==========================================
-// 💼 LINKEDIN AUTH ROUTES (আপডেট করা হয়েছে)
+// 💼 LINKEDIN AUTH ROUTES
 // ==========================================
 app.get('/auth/linkedin', (req, res) => {
     const userId = req.query.user_id;
@@ -505,7 +618,7 @@ app.get('/auth/linkedin/callback', async (req, res) => {
 
         const accessToken = tokenResponse.data.access_token;
         const refreshToken = tokenResponse.data.refresh_token || null;
-        const expiresIn = tokenResponse.data.expires_in || 5184000; // ৬০ দিনের ডিফল্ট হিসাব
+        const expiresIn = tokenResponse.data.expires_in || 5184000;
         const expiresAt = new Date(Date.now() + expiresIn * 1000);
 
         const profileResponse = await axios.get('https://api.linkedin.com/v2/userinfo', {
@@ -788,7 +901,7 @@ app.get('/api/user/profile', authenticateToken, async (req, res) => {
     try {
         const userId = req.user.id;
         
-        const userQuery = 'SELECT id, email, name, profile_pic, created_at FROM users WHERE id = $1';
+        const userQuery = 'SELECT id, email, name, profile_pic, whatsapp_number, created_at FROM users WHERE id = $1';
         const userResult = await pool.query(userQuery, [userId]);
 
         if (userResult.rows.length === 0) {
@@ -811,18 +924,19 @@ app.get('/api/user/profile', authenticateToken, async (req, res) => {
 
 // 📝 ২. ইউজার প্রোফাইল আপডেট করা
 app.put('/api/user/profile', authenticateToken, async (req, res) => {
-    const { name, profile_pic } = req.body;
+    const { name, profile_pic, whatsapp_number } = req.body;
     const userId = req.user.id;
 
     try {
         const updateQuery = `
             UPDATE users 
             SET name = COALESCE($1, name), 
-                profile_pic = COALESCE($2, profile_pic)
-            WHERE id = $3 
-            RETURNING id, email, name, profile_pic;
+                profile_pic = COALESCE($2, profile_pic),
+                whatsapp_number = COALESCE($3, whatsapp_number)
+            WHERE id = $4 
+            RETURNING id, email, name, profile_pic, whatsapp_number;
         `;
-        const result = await pool.query(updateQuery, [name, profile_pic, userId]);
+        const result = await pool.query(updateQuery, [name, profile_pic, whatsapp_number, userId]);
 
         res.status(200).json({
             success: true,
@@ -1096,7 +1210,6 @@ app.get('/auth/youtube', (req, res) => {
     const redirectUri = `${backendUrl}/auth/youtube/callback`;
     const state = JSON.stringify({ user_id: userId });
 
-    // ইউটিউবে কন্টেন্ট আপলোড ও চ্যানেল তথ্য দেখার স্কোপ
     const scopes = [
         'https://www.googleapis.com/auth/youtube.upload',
         'https://www.googleapis.com/auth/youtube.readonly'
@@ -1130,7 +1243,6 @@ app.get('/auth/youtube/callback', async (req, res) => {
         const backendUrl = process.env.BACKEND_URL || 'https://social-backend-1hwz.onrender.com';
         const redirectUri = `${backendUrl}/auth/youtube/callback`;
 
-        // টোকেন এক্সচেঞ্জ
         const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', new URLSearchParams({
             code: code,
             client_id: clientId,
@@ -1144,7 +1256,6 @@ app.get('/auth/youtube/callback', async (req, res) => {
         const { access_token, refresh_token, expires_in } = tokenResponse.data;
         const expiresAt = new Date(Date.now() + expires_in * 1000);
 
-        // ইউটিউব চ্যানেলের তথ্য তুলে আনা
         const channelResponse = await axios.get('https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true', {
             headers: { Authorization: `Bearer ${access_token}` }
         });
@@ -1158,7 +1269,6 @@ app.get('/auth/youtube/callback', async (req, res) => {
         const channelId = channel.id;
         const channelName = channel.snippet.title;
 
-        // ডাটাবেসে চেক ও সেভ
         const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2 AND platform = $3';
         const existing = await pool.query(checkQuery, [channelId, userId, 'youtube']);
 
