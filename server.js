@@ -303,7 +303,10 @@ app.get('/auth/facebook/callback', async (req, res) => {
         const pagesResponse = await axios.get(pagesUrl);
         const pages = pagesResponse.data.data;
 
+        let hasConnectedInstagram = false;
+
         for (const page of pages) {
+            // ফেসবুক পেজ সেভ বা আপডেট
             const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2';
             const existing = await pool.query(checkQuery, [page.id, userId]);
 
@@ -315,13 +318,14 @@ app.get('/auth/facebook/callback', async (req, res) => {
                 await pool.query(insertQuery, [userId, page.id, page.name, page.access_token, true, 'facebook']);
             }
 
+            // ইন্সটাগ্রাম একাউন্ট চেকিং
             try {
                 const igUrl = `https://graph.facebook.com/v18.0/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`;
                 const igResponse = await axios.get(igUrl);
                 
                 if (igResponse.data && igResponse.data.instagram_business_account) {
                     const igId = igResponse.data.instagram_business_account.id;
-                    const igPageName = `${page.name} (IG)`;
+                    const igPageName = page.name; // এখানে ফেসবুক পেজের নামই দেখানো হচ্ছে
 
                     const checkIg = await pool.query(
                         'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2 AND platform = $3', 
@@ -335,13 +339,53 @@ app.get('/auth/facebook/callback', async (req, res) => {
                         const insertIgQuery = 'INSERT INTO social_accounts (user_id, page_id, page_name, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5, $6)';
                         await pool.query(insertIgQuery, [userId, igId, igPageName, page.access_token, true, 'instagram']);
                     }
+
+                    hasConnectedInstagram = true;
                 }
             } catch (igErr) {
                 console.error(`Instagram fetch error for page ${page.id}:`, igErr.message);
             }
         }
 
-        res.send(`<html><body style="font-family: Arial; text-align: center; padding: 50px;"><h2>🎉 ফেসবুক ও ইনস্টাগ্রাম অ্যাকাউন্ট সফলভাবে কানেক্ট হয়েছে!</h2><p>ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p></body></html>`);
+        if (hasConnectedInstagram) {
+            res.send(`
+                <html>
+                <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px; background-color: #f4f6f9;">
+                    <div style="max-width: 500px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+                        <h2 style="color: #2e7d32;">🎉 ফেসবুক ও ইনস্টাগ্রাম সফলভাবে কানেক্ট হয়েছে!</h2>
+                        <p style="color: #555;">আপনার ফেসবুক পেজ এবং ইনস্টাগ্রাম বিজনেস অ্যাকাউন্ট সফলভাবে সংযুক্ত হয়েছে।</p>
+                        <p style="font-weight: bold;">ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p>
+                    </div>
+                </body>
+                </html>
+            `);
+        } else {
+            res.send(`
+                <html>
+                <body style="font-family: Arial, sans-serif; padding: 30px; background-color: #f4f6f9; color: #333;">
+                    <div style="max-width: 600px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);">
+                        <h2 style="color: #d32f2f; text-align: center;">⚠️ আপনার কোনো ইনস্টাগ্রাম পেজ কানেক্ট হয়নি!</h2>
+                        <p style="text-align: center; color: #555;">আপনার ফেসবুক পেজটি সফলভাবে কানেক্ট হয়েছে, কিন্তু এর সাথে কোনো <b>Instagram Business/Creator Account</b> যুক্ত ছিল না।</p>
+                        
+                        <hr style="border: 0; border-top: 1px solid #ddd; margin: 20px 0;">
+
+                        <h3>📌 যেভাবে ইনস্টাগ্রাম কানেক্ট করবেন:</h3>
+                        <ol style="line-height: 1.8; color: #444;">
+                            <li>আপনার <b>Instagram App</b>-এ যান এবং প্রোফাইলটিকে <b>Professional / Business Account</b>-এ সুইচ করুন।</li>
+                            <li>আপনার <b>Facebook Page</b>-এ প্রবেশ করুন।</li>
+                            <li><b>Settings</b> &gt; <b>Linked Accounts</b>-এ যান।</li>
+                            <li><b>Instagram</b> অপশন সিলেক্ট করে আপনার ইনস্টাগ্রাম অ্যাকাউন্টটি লগইন করে কানেক্ট করুন।</li>
+                            <li>কানেক্ট হয়ে গেলে অ্যাপ থেকে পুনরায় <b>Facebook & Instagram Connect</b> বাটনে চাপ দিন।</li>
+                        </ol>
+
+                        <div style="text-align: center; margin-top: 30px;">
+                            <p style="font-weight: bold; color: #1976d2;">প্রসেস সম্পন্ন হলে এই ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p>
+                        </div>
+                    </div>
+                </body>
+                </html>
+            `);
+        }
     } catch (error) {
         console.error("Facebook/Instagram Auth Error:", error.response?.data || error.message);
         res.status(500).send('Authentication failed!');
