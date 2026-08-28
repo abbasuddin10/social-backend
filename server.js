@@ -349,14 +349,79 @@ app.get('/auth/facebook/callback', async (req, res) => {
 });
 
 // ==========================================
-// 💼 LINKEDIN AUTH ROUTES (যুক্ত করা হয়েছে)
+// 💼 LINKEDIN AUTO REFRESH HELPER FUNCTION
+// ==========================================
+async function getValidLinkedinToken(userId) {
+    try {
+        const res = await pool.query(
+            "SELECT access_token, refresh_token, expires_at FROM social_accounts WHERE user_id = $1 AND platform = 'linkedin' AND is_active = TRUE",
+            [userId]
+        );
+
+        if (res.rows.length === 0) return null;
+        const account = res.rows[0];
+
+        // টোকেনের মেয়াদ শেষ হতে ৫ দিন বা তার কম বাকি থাকলে রিফ্রেশ করবে
+        const isExpiringSoon = account.expires_at && (new Date(account.expires_at) - new Date() < 5 * 24 * 60 * 60 * 1000);
+
+        if (isExpiringSoon && account.refresh_token) {
+            try {
+                const refreshRes = await axios.post('https://www.linkedin.com/oauth/v2/accessToken', null, {
+                    params: {
+                        grant_type: 'refresh_token',
+                        refresh_token: account.refresh_token,
+                        client_id: process.env.LINKEDIN_CLIENT_ID,
+                        client_secret: process.env.LINKEDIN_CLIENT_SECRET,
+                    },
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+                });
+
+                const newAccessToken = refreshRes.data.access_token;
+                const newRefreshToken = refreshRes.data.refresh_token || account.refresh_token;
+                const newExpiresAt = new Date(Date.now() + refreshRes.data.expires_in * 1000);
+
+                await pool.query(
+                    "UPDATE social_accounts SET access_token = $1, refresh_token = $2, expires_at = $3, updated_at = NOW() WHERE user_id = $4 AND platform = 'linkedin'",
+                    [newAccessToken, newRefreshToken, newExpiresAt, userId]
+                );
+
+                return newAccessToken;
+            } catch (e) {
+                console.error('LinkedIn Refresh Failed:', e.response?.data || e.message);
+
+                // ৪০১ বা ৪০৩ এরর দিলে পারমিশন বাতিলের কারণে ইজ এক্টিভ ফলস করে দেওয়া হবে
+                if (e.response && (e.response.status === 401 || e.response.status === 403)) {
+                    await pool.query(
+                        "UPDATE social_accounts SET is_active = FALSE WHERE user_id = $1 AND platform = 'linkedin'",
+                        [userId]
+                    );
+                }
+                return account.access_token;
+            }
+        }
+
+        return account.access_token;
+    } catch (err) {
+        console.error("Helper getValidLinkedinToken Error:", err);
+        return null;
+    }
+}
+
+// ==========================================
+// 💼 LINKEDIN AUTH ROUTES (আপডেট করা হয়েছে)
 // ==========================================
 app.get('/auth/linkedin', (req, res) => {
     const userId = req.query.user_id;
     if (!userId) return res.status(400).send('❌ ত্রুটি: user_id প্রয়োজন!');
 
     const clientId = process.env.LINKEDIN_CLIENT_ID;
-    const redirectUri = `${process.env.BACKEND_URL}/auth/linkedin/callback`;
+    const backendUrl = process.env.BACKEND_URL || 'https://social-backend-1hwz.onrender.com';
+
+    if (!clientId) {
+        return res.status(500).send('❌ ত্রুটি: সার্ভারে LINKEDIN_CLIENT_ID সেট করা নেই!');
+    }
+
+    const redirectUri = `${backendUrl}/auth/linkedin/callback`;
     const state = JSON.stringify({ user_id: userId });
     const scope = 'openid profile w_member_social email';
 
@@ -377,7 +442,8 @@ app.get('/auth/linkedin/callback', async (req, res) => {
     try {
         const clientId = process.env.LINKEDIN_CLIENT_ID;
         const clientSecret = process.env.LINKEDIN_CLIENT_SECRET;
-        const redirectUri = `${process.env.BACKEND_URL}/auth/linkedin/callback`;
+        const backendUrl = process.env.BACKEND_URL || 'https://social-backend-1hwz.onrender.com';
+        const redirectUri = `${backendUrl}/auth/linkedin/callback`;
 
         const tokenResponse = await axios.post(
             'https://www.linkedin.com/oauth/v2/accessToken',
@@ -392,6 +458,9 @@ app.get('/auth/linkedin/callback', async (req, res) => {
         );
 
         const accessToken = tokenResponse.data.access_token;
+        const refreshToken = tokenResponse.data.refresh_token || null;
+        const expiresIn = tokenResponse.data.expires_in || 5184000; // ৬০ দিনের ডিফল্ট হিসাব
+        const expiresAt = new Date(Date.now() + expiresIn * 1000);
 
         const profileResponse = await axios.get('https://api.linkedin.com/v2/userinfo', {
             headers: { Authorization: `Bearer ${accessToken}` }
@@ -404,11 +473,11 @@ app.get('/auth/linkedin/callback', async (req, res) => {
         const existing = await pool.query(checkQuery, [linkedinSub, userId, 'linkedin']);
 
         if (existing.rows.length > 0) {
-            const updateQuery = 'UPDATE social_accounts SET access_token = $1, page_name = $2, is_active = TRUE, updated_at = NOW() WHERE page_id = $3 AND user_id = $4 AND platform = $5';
-            await pool.query(updateQuery, [accessToken, profileName, linkedinSub, userId, 'linkedin']);
+            const updateQuery = 'UPDATE social_accounts SET access_token = $1, refresh_token = $2, expires_at = $3, page_name = $4, is_active = TRUE, updated_at = NOW() WHERE page_id = $5 AND user_id = $6 AND platform = $7';
+            await pool.query(updateQuery, [accessToken, refreshToken, expiresAt, profileName, linkedinSub, userId, 'linkedin']);
         } else {
-            const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, page_name, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5, $6)';
-            await pool.query(insertQuery, [userId, linkedinSub, profileName, accessToken, true, 'linkedin']);
+            const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, page_name, access_token, refresh_token, expires_at, is_active, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)';
+            await pool.query(insertQuery, [userId, linkedinSub, profileName, accessToken, refreshToken, expiresAt, true, 'linkedin']);
         }
 
         res.send(`<html><body style="font-family: Arial; text-align: center; padding: 50px;"><h2>🎉 LinkedIn অ্যাকাউন্ট সফলভাবে কানেক্ট হয়েছে!</h2><p>ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p></body></html>`);
@@ -601,7 +670,7 @@ app.get('/user/accounts', async (req, res) => {
     }
 
     try {
-        const query = 'SELECT platform, page_id, page_name FROM social_accounts WHERE user_id = $1::INTEGER';
+        const query = 'SELECT platform, page_id, page_name, is_active FROM social_accounts WHERE user_id = $1::INTEGER';
         const result = await pool.query(query, [userId]);
 
         res.status(200).json({
