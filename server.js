@@ -268,85 +268,194 @@ app.get('/auth/facebook', (req, res) => {
     res.redirect(fbLoginUrl);
 });
 
+// Facebook OAuth Callback Route
 app.get('/auth/facebook/callback', async (req, res) => {
-    const code = req.query.code;
-    const stateStr = req.query.state;
+  const { code, state: userId } = req.query;
 
-    let userId = null;
-    try {
-        if (stateStr) {
-            const parsedState = JSON.parse(stateStr);
-            userId = parsedState.user_id;
-        }
-    } catch (e) {
-        console.error("State parse error:", e);
+  try {
+    // ১. OAuth Code দিয়ে User Access Token নেওয়া
+    const tokenResponse = await axios.get('https://graph.facebook.com/v18.0/oauth/access_token', {
+      params: {
+        client_id: process.env.FB_CLIENT_ID,
+        client_secret: process.env.FB_CLIENT_SECRET,
+        redirect_uri: process.env.FB_REDIRECT_URI,
+        code: code,
+      },
+    });
+
+    const userAccessToken = tokenResponse.data.access_token;
+
+    // ২. യൂজার সাথে সম্পর্কিত ফেসবুক পেজ এবং লিঙ্কড ইনস্টাগ্রাম একাউন্ট ফেচ করা
+    const pagesResponse = await axios.get('https://graph.facebook.com/v18.0/me/accounts', {
+      params: {
+        fields: 'id,name,access_token,instagram_business_account',
+        access_token: userAccessToken,
+      },
+    });
+
+    const pages = pagesResponse.data.data;
+
+    if (!pages || pages.length === 0) {
+      return res.send(renderResponseHtml({
+        title: '⚠️ কোনো ফেসবুক পেজ পাওয়া যায়নি!',
+        message: 'আপনার ফেসবুক অ্যাকাউন্টে কোনো পাবলিক/বিজনেস পেজ নেই। অনুগ্রহ করে প্রথমে একটি পেজ তৈরি করুন।',
+        status: 'warning'
+      }));
     }
 
-    if (!code || !userId) {
-        return res.status(400).send('❌ ত্রুটি: অথেন্টিকেশন কোড বা ইউজার আইডি পাওয়া যায়নি।');
+    // ৩. প্রথম পেজটির ডাটা নিয়ে প্রসেস করা (অথবা একাধিক পেজ থাকলে লুপ করা যায়)
+    const primaryPage = pages[0];
+    let isInstagramConnected = false;
+    let instagramData = null;
+
+    // 🎯 ফেসবুক পেজ সেভ/আপডেট (আপনার MongoDB/Database Logic)
+    await Database.saveFacebookPage({
+      userId: userId,
+      pageId: primaryPage.id,
+      pageName: primaryPage.name,
+      accessToken: primaryPage.access_token,
+      isConnected: true,
+    });
+
+    // 🎯 চেক করা এই পেজের সাথে Instagram Business Account লিঙ্ক করা আছে কিনা
+    if (primaryPage.instagram_business_account) {
+      const instagramAccountId = primaryPage.instagram_business_account.id;
+
+      // ইনস্টাগ্রাম অ্যাকাউন্ট ফেচ করা
+      const igResponse = await axios.get(`https://graph.facebook.com/v18.0/${instagramAccountId}`, {
+        params: {
+          fields: 'id,username,name,profile_picture_url',
+          access_token: primaryPage.access_token,
+        },
+      });
+
+      instagramData = igResponse.data;
+
+      // ইনস্টাগ্রাম অ্যাকাউন্ট ডাটাবেজে সেভ
+      await Database.saveInstagramAccount({
+        userId: userId,
+        instagramId: instagramData.id,
+        username: instagramData.username,
+        name: instagramData.name || instagramData.username,
+        accessToken: primaryPage.access_token, // পেজ এক্সেস টোকেনই ইনস্টাগ্রামের জন্য ব্যবহৃত হয়
+        isConnected: true,
+      });
+
+      isInstagramConnected = true;
+    } else {
+      // যদি ইনস্টাগ্রাম না থাকে, ডাটাবেজে ডিসকানেক্টেড ফ্ল্যাগ রেখে দেওয়া
+      await Database.markInstagramDisconnected(userId);
     }
 
-    try {
-        const appId = process.env.FACEBOOK_APP_ID;
-        const appSecret = process.env.FACEBOOK_APP_SECRET;
-        const redirectUri = `${process.env.BACKEND_URL}/auth/facebook/callback`;
+    // ৪. ইউজারের জন্য ডাইনামিক এবং সুন্দর HTML ব্রাউজার রেসপন্স
+    const title = isInstagramConnected
+      ? '🎉 ফেসবুক ও ইনস্টাগ্রাম সফলভাবে কানেক্ট হয়েছে!'
+      : '✅ ফেসবুক পেজ কানেক্ট হয়েছে!';
 
-        const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
-        const tokenResponse = await axios.get(tokenUrl);
-        const shortLivedToken = tokenResponse.data.access_token;
+    const message = isInstagramConnected
+      ? `আপনার ফেসবুক পেজ <b>"${primaryPage.name}"</b> এবং ইনস্টাগ্রাম অ্যাকাউন্ট <b>"@${instagramData.username}"</b> সফলভাবে কানেক্ট করা হয়েছে।`
+      : `আপনার ফেসবুক পেজ <b>"${primaryPage.name}"</b> কানেক্ট হয়েছে। তবে এই পেজের সাথে কোনো <b>Instagram Business Account</b> যুক্ত পাওয়া যায়নি।`;
 
-        const longLivedUrl = `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken}`;
-        const longLivedResponse = await axios.get(longLivedUrl);
-        const longLivedAccessToken = longLivedResponse.data.access_token;
+    return res.send(renderResponseHtml({
+      title,
+      message,
+      isInstagramConnected,
+      status: 'success'
+    }));
 
-        const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${longLivedAccessToken}`;
-        const pagesResponse = await axios.get(pagesUrl);
-        const pages = pagesResponse.data.data;
-
-        for (const page of pages) {
-            const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2';
-            const existing = await pool.query(checkQuery, [page.id, userId]);
-
-            if (existing.rows.length > 0) {
-                const updateQuery = 'UPDATE social_accounts SET access_token = $2, page_name = $3, is_active = TRUE, updated_at = NOW() WHERE page_id = $1 AND user_id = $4';
-                await pool.query(updateQuery, [page.id, page.access_token, page.name, userId]);
-            } else {
-                const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, page_name, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5, $6)';
-                await pool.query(insertQuery, [userId, page.id, page.name, page.access_token, true, 'facebook']);
-            }
-
-            try {
-                const igUrl = `https://graph.facebook.com/v18.0/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`;
-                const igResponse = await axios.get(igUrl);
-                
-                if (igResponse.data && igResponse.data.instagram_business_account) {
-                    const igId = igResponse.data.instagram_business_account.id;
-                    const igPageName = `${page.name} (IG)`;
-
-                    const checkIg = await pool.query(
-                        'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2 AND platform = $3', 
-                        [igId, userId, 'instagram']
-                    );
-
-                    if (checkIg.rows.length > 0) {
-                        const updateIgQuery = 'UPDATE social_accounts SET access_token = $1, page_name = $2, is_active = TRUE, updated_at = NOW() WHERE page_id = $3 AND user_id = $4 AND platform = $5';
-                        await pool.query(updateIgQuery, [page.access_token, igPageName, igId, userId, 'instagram']);
-                    } else {
-                        const insertIgQuery = 'INSERT INTO social_accounts (user_id, page_id, page_name, access_token, is_active, platform) VALUES ($1, $2, $3, $4, $5, $6)';
-                        await pool.query(insertIgQuery, [userId, igId, igPageName, page.access_token, true, 'instagram']);
-                    }
-                }
-            } catch (igErr) {
-                console.error(`Instagram fetch error for page ${page.id}:`, igErr.message);
-            }
-        }
-
-        res.send(`<html><body style="font-family: Arial; text-align: center; padding: 50px;"><h2>🎉 ফেসবুক ও ইনস্টাগ্রাম অ্যাকাউন্ট সফলভাবে কানেক্ট হয়েছে!</h2><p>ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p></body></html>`);
-    } catch (error) {
-        console.error("Facebook/Instagram Auth Error:", error.response?.data || error.message);
-        res.status(500).send('Authentication failed!');
-    }
+  } catch (error) {
+    console.error('Facebook OAuth Error:', error.response?.data || error.message);
+    return res.send(renderResponseHtml({
+      title: '❌ সংযোগ ব্যর্থ হয়েছে!',
+      message: 'ফেসবুক বা ইনস্টাগ্রাম অ্যাকাউন্ট কানেক্ট করার সময় কোনো সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।',
+      status: 'error'
+    }));
+  }
 });
+
+
+// 🎨 ব্রাউজারে দেখানোর জন্য ক্লিন UI থিম তৈরি করার হেল্পার ফাংশন
+function renderResponseHtml({ title, message, isInstagramConnected = false, status = 'success' }) {
+  const isWarning = status === 'warning' || (status === 'success' && !isInstagramConnected);
+  const badgeColor = isWarning ? '#FF9800' : status === 'error' ? '#F44336' : '#4CAF50';
+
+  return `
+    <!DOCTYPE html>
+    <html lang="bn">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>PostPilot - Account Status</title>
+      <style>
+        body {
+          font-family: 'Segoe UI', Roboto, sans-serif;
+          background-color: #F4F6F8;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          height: 100vh;
+          margin: 0;
+        }
+        .card {
+          background: #ffffff;
+          padding: 32px 24px;
+          border-radius: 20px;
+          box-shadow: 0 10px 25px rgba(0,0,0,0.08);
+          text-align: center;
+          max-width: 380px;
+          width: 90%;
+        }
+        .icon {
+          font-size: 50px;
+          margin-bottom: 15px;
+        }
+        h2 {
+          color: #1A1D1E;
+          font-size: 20px;
+          margin-bottom: 12px;
+          line-height: 1.4;
+        }
+        p {
+          color: #555;
+          font-size: 14px;
+          line-height: 1.6;
+          margin-bottom: 20px;
+        }
+        .notice-box {
+          background-color: ${isWarning ? '#FFF8E7' : '#F0F9FF'};
+          border-left: 4px solid ${badgeColor};
+          padding: 12px;
+          border-radius: 8px;
+          font-size: 13px;
+          color: #444;
+          text-align: left;
+          margin-bottom: 20px;
+        }
+        .footer-text {
+          font-size: 13px;
+          font-weight: 600;
+          color: #6200EE;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="icon">${status === 'error' ? '❌' : isInstagramConnected ? '🎉' : '⚠️'}</div>
+        <h2>${title}</h2>
+        <p>${message}</p>
+        
+        ${!isInstagramConnected && status === 'success' ? `
+          <div class="notice-box">
+            <b>টিপস:</b> আপনি যদি ইনস্টাগ্রামেও পোস্ট অটোমেট করতে চান, তবে ফেসবুক পেজের সেটিংস থেকে ইনস্টাগ্রাম প্রফেশনাল অ্যাকাউন্টটি যুক্ত করে পুনরায় কানেক্ট করুন।
+          </div>
+        ` : ''}
+
+        <div class="footer-text">এখন এই ব্রাউজার ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</div>
+      </div>
+    </body>
+    </html>
+  `;
+}
 
 // ==========================================
 // 💼 LINKEDIN AUTO REFRESH HELPER FUNCTION
