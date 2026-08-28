@@ -375,6 +375,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
 
 
 // 🎨 ব্রাউজারে দেখানোর জন্য ক্লিন UI থিম তৈরি করার হেল্পার ফাংশন
+// 🎨 ব্রাউজারে দেখানোর জন্য ক্লিন UI থিম
 function renderResponseHtml({ title, message, isInstagramConnected = false, status = 'success' }) {
   const isWarning = status === 'warning' || (status === 'success' && !isInstagramConnected);
   const badgeColor = isWarning ? '#FF9800' : status === 'error' ? '#F44336' : '#4CAF50';
@@ -393,43 +394,61 @@ function renderResponseHtml({ title, message, isInstagramConnected = false, stat
           display: flex;
           justify-content: center;
           align-items: center;
-          height: 100vh;
+          min-height: 100vh;
           margin: 0;
+          padding: 20px 0;
         }
         .card {
           background: #ffffff;
-          padding: 32px 24px;
+          padding: 28px 24px;
           border-radius: 20px;
           box-shadow: 0 10px 25px rgba(0,0,0,0.08);
           text-align: center;
-          max-width: 380px;
+          max-width: 420px;
           width: 90%;
         }
         .icon {
-          font-size: 50px;
-          margin-bottom: 15px;
+          font-size: 45px;
+          margin-bottom: 12px;
         }
         h2 {
           color: #1A1D1E;
-          font-size: 20px;
-          margin-bottom: 12px;
+          font-size: 19px;
+          margin-bottom: 10px;
           line-height: 1.4;
         }
         p {
           color: #555;
-          font-size: 14px;
-          line-height: 1.6;
-          margin-bottom: 20px;
+          font-size: 13.5px;
+          line-height: 1.5;
+          margin-bottom: 16px;
         }
         .notice-box {
-          background-color: ${isWarning ? '#FFF8E7' : '#F0F9FF'};
+          background-color: #FFF8E7;
           border-left: 4px solid ${badgeColor};
-          padding: 12px;
-          border-radius: 8px;
+          padding: 14px;
+          border-radius: 10px;
           font-size: 13px;
-          color: #444;
+          color: #333;
           text-align: left;
           margin-bottom: 20px;
+        }
+        .notice-title {
+          font-weight: bold;
+          color: #D97706;
+          font-size: 14px;
+          margin-bottom: 10px;
+          display: flex;
+          align-items: center;
+          gap: 5px;
+        }
+        .steps-list {
+          margin: 0;
+          padding-left: 18px;
+          line-height: 1.7;
+        }
+        .steps-list li {
+          margin-bottom: 6px;
         }
         .footer-text {
           font-size: 13px;
@@ -446,7 +465,13 @@ function renderResponseHtml({ title, message, isInstagramConnected = false, stat
         
         ${!isInstagramConnected && status === 'success' ? `
           <div class="notice-box">
-            <b>টিপস:</b> আপনি যদি ইনস্টাগ্রামেও পোস্ট অটোমেট করতে চান, তবে ফেসবুক পেজের সেটিংস থেকে ইনস্টাগ্রাম প্রফেশনাল অ্যাকাউন্টটি যুক্ত করে পুনরায় কানেক্ট করুন।
+            <div class="notice-title">💡 সহজ ৪টি ধাপে ইনস্টাগ্রাম কানেক্ট করুন:</div>
+            <ol class="steps-list">
+              <li><strong>Instagram-এ প্রফেশনাল সুইচ করুন:</strong> Profile > Menu > Settings & Privacy > Account type-এ গিয়ে Professional করুন।</li>
+              <li><strong>Facebook Page লিঙ্ক করুন:</strong> প্রসেসের সময় বা Edit Profile > Page থেকে আপনার পেজটি কানেক্ট করুন।</li>
+              <li><strong>অনবোর্ডিং স্কিপ করুন:</strong> কোনো এক্সট্রা ৮টি স্টেপ পুরন করার দরকার নেই, সরাসরি ✕ কেটে দিন।</li>
+              <li><strong>পুনরায় কানেক্ট দিন:</strong> অ্যাপে ফিরে এসে আবার Connect চাপুন।</li>
+            </ol>
           </div>
         ` : ''}
 
