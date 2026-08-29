@@ -12,6 +12,7 @@ const crypto = require('crypto'); // 🔑 Twitter PKCE-এর জন্য য�
 const { createClient } = require('@supabase/supabase-js');
 const { OAuth2Client } = require('google-auth-library');
 const { GoogleGenAI } = require('@google/genai');
+const crypto = require('crypto');
 
 // 🚀 Initialize Gemini Client
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -843,6 +844,20 @@ app.get('/auth/linkedin/callback', async (req, res) => {
 // ==========================================
 // 🐦 TWITTER (X) AUTH ROUTES (FIXED PKCE)
 // ==========================================
+
+// Base64URL Encode Helper Function for PKCE
+function base64URLEncode(str) {
+    return str.toString('base64')
+        .replace(/=/g, '')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_');
+}
+
+// SHA256 Helper Function for PKCE
+function sha256(buffer) {
+    return crypto.createHash('sha256').update(buffer).digest();
+}
+
 app.get('/auth/twitter', (req, res) => {
     const userId = req.query.user_id;
     if (!userId) return res.status(400).send('❌ ত্রুটি: user_id প্রয়োজন!');
@@ -856,14 +871,16 @@ app.get('/auth/twitter', (req, res) => {
 
     const redirectUri = `${backendUrl}/auth/twitter/callback`;
     
-    // 🔑 dynamic code_verifier জেনারেট করা
-    const codeVerifier = crypto.randomBytes(32).toString('hex');
+    // 🔑 OAuth 2.0 S256 PKCE Challenge জেনারেট করা
+    const codeVerifier = base64URLEncode(crypto.randomBytes(32));
+    const codeChallenge = base64URLEncode(sha256(codeVerifier));
+
     const state = JSON.stringify({ user_id: userId, code_verifier: codeVerifier });
     
-    // OAuth 2.0 PKCE Scope
+    // OAuth 2.0 Scope
     const scope = 'tweet.read tweet.write users.read offline.access';
 
-    const twitterLoginUrl = `https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}&code_challenge=${codeVerifier}&code_challenge_method=plain`;
+    const twitterLoginUrl = `https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
 
     res.redirect(twitterLoginUrl);
 });
@@ -901,7 +918,6 @@ app.get('/auth/twitter/callback', async (req, res) => {
             new URLSearchParams({
                 code: code,
                 grant_type: 'authorization_code',
-                client_id: clientId,
                 redirect_uri: redirectUri,
                 code_verifier: codeVerifier
             }).toString(),
@@ -951,6 +967,7 @@ app.get('/auth/twitter/callback', async (req, res) => {
         res.status(500).send('Twitter Authentication failed!');
     }
 });
+
 
 app.post('/api/post-to-facebook', authenticateToken, async (req, res) => {
     const { page_id, message } = req.body;
