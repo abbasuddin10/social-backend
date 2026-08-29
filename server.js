@@ -13,7 +13,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { OAuth2Client } = require('google-auth-library');
 const { GoogleGenAI } = require('@google/genai');
 const crypto = require('crypto');
-
+const twitterVerifiers = {};
 // 🚀 Initialize Gemini Client
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -842,10 +842,12 @@ app.get('/auth/linkedin/callback', async (req, res) => {
 });
 
 // ==========================================
-// 🐦 TWITTER (X) AUTH ROUTES (FIXED PKCE)
+// 🐦 TWITTER (X) AUTH ROUTES (FIXED SESSION/PKCE)
 // ==========================================
 
-// Base64URL Encode Helper Function for PKCE
+// In-Memory store for PKCE Code Verifiers
+
+
 function base64URLEncode(str) {
     return str.toString('base64')
         .replace(/=/g, '')
@@ -853,7 +855,6 @@ function base64URLEncode(str) {
         .replace(/\//g, '_');
 }
 
-// SHA256 Helper Function for PKCE
 function sha256(buffer) {
     return crypto.createHash('sha256').update(buffer).digest();
 }
@@ -870,39 +871,36 @@ app.get('/auth/twitter', (req, res) => {
     }
 
     const redirectUri = `${backendUrl}/auth/twitter/callback`;
-    
-    // 🔑 OAuth 2.0 S256 PKCE Challenge জেনারেট করা
+
+    // 🔑 Generate clean PKCE Pair
     const codeVerifier = base64URLEncode(crypto.randomBytes(32));
     const codeChallenge = base64URLEncode(sha256(codeVerifier));
 
-    const state = JSON.stringify({ user_id: userId, code_verifier: codeVerifier });
+    // Simple single string state to prevent JSON encoding errors
+    const state = `usr_${userId}_${Date.now()}`;
     
-    // OAuth 2.0 Scope
+    // Save verifier in memory with the state key
+    twitterVerifiers[state] = {
+        userId: userId,
+        codeVerifier: codeVerifier
+    };
+
     const scope = 'tweet.read tweet.write users.read offline.access';
 
-    const twitterLoginUrl = `https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
+    const twitterLoginUrl = `https://twitter.com/i/oauth2/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${state}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
 
     res.redirect(twitterLoginUrl);
 });
 
 app.get('/auth/twitter/callback', async (req, res) => {
-    const { code, state: stateStr } = req.query;
-    let userId = null;
-    let codeVerifier = null;
+    const { code, state } = req.query;
 
-    try {
-        if (stateStr) {
-            const parsedState = JSON.parse(stateStr);
-            userId = parsedState.user_id;
-            codeVerifier = parsedState.code_verifier;
-        }
-    } catch (e) { 
-        console.error("State parse error:", e); 
-    }
-
-    if (!code || !userId || !codeVerifier) {
+    if (!code || !state || !twitterVerifiers[state]) {
         return res.status(400).send('❌ অথেন্টিকেশন কোড, ইউজার আইডি বা ভেরিফায়ার পাওয়া যায়নি।');
     }
+
+    const { userId, codeVerifier } = twitterVerifiers[state];
+    delete twitterVerifiers[state]; // Clean up after use
 
     try {
         const clientId = process.env.TWITTER_CLIENT_ID;
@@ -910,7 +908,6 @@ app.get('/auth/twitter/callback', async (req, res) => {
         const backendUrl = process.env.BACKEND_URL || 'https://social-backend-1hwz.onrender.com';
         const redirectUri = `${backendUrl}/auth/twitter/callback`;
 
-        // Basic Auth Header encoding for Twitter API v2
         const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
 
         const tokenResponse = await axios.post(
@@ -919,7 +916,8 @@ app.get('/auth/twitter/callback', async (req, res) => {
                 code: code,
                 grant_type: 'authorization_code',
                 redirect_uri: redirectUri,
-                code_verifier: codeVerifier
+                code_verifier: codeVerifier,
+                client_id: clientId
             }).toString(),
             {
                 headers: {
@@ -932,7 +930,6 @@ app.get('/auth/twitter/callback', async (req, res) => {
         const { access_token, refresh_token, expires_in } = tokenResponse.data;
         const expiresAt = new Date(Date.now() + expires_in * 1000);
 
-        // Fetch User Info
         const profileResponse = await axios.get('https://api.twitter.com/2/users/me', {
             headers: { Authorization: `Bearer ${access_token}` }
         });
@@ -967,7 +964,6 @@ app.get('/auth/twitter/callback', async (req, res) => {
         res.status(500).send('Twitter Authentication failed!');
     }
 });
-
 
 app.post('/api/post-to-facebook', authenticateToken, async (req, res) => {
     const { page_id, message } = req.body;
