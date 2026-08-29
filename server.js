@@ -12,7 +12,6 @@ const crypto = require('crypto'); // 🔑 Twitter PKCE-এর জন্য য�
 const { createClient } = require('@supabase/supabase-js');
 const { OAuth2Client } = require('google-auth-library');
 const { GoogleGenAI } = require('@google/genai');
-const crypto = require('crypto');
 const twitterVerifiers = {};
 // 🚀 Initialize Gemini Client
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
