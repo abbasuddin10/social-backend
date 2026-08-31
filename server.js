@@ -995,10 +995,13 @@ const uploadSingleFile = async (file, userId, reqHost) => {
         if (supabase) {
             const fileStream = fs.readFileSync(file.path);
             const uniqueSuffix = Date.now() + '-' + Math.floor(Math.random() * 1E9);
-            const fileName = `user-${userId}-${uniqueSuffix}.jpg`;
+            
+            // 🎯 Extension dynamic করা হলো (video/image উভয়টির জন্য)
+            const ext = file.originalname.split('.').pop() || 'file';
+            const fileName = `user-${userId}-${uniqueSuffix}.${ext}`;
 
             const { data, error } = await supabase.storage
-                .from('postimages')
+                .from('postimages') // Supabase bucket name
                 .upload(fileName, fileStream, {
                     contentType: file.mimetype,
                     upsert: true
