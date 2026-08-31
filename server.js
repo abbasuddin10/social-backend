@@ -1035,14 +1035,20 @@ const uploadSingleFile = async (file, userId, reqHost) => {
 
 app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
     const userId = req.user.id;
-    const { mode, content, facebook, instagram, pinterest, twitter, schedule_time } = req.body;
+    // 🎯 1. req.body থেকে linkedin এবং youtube রিসিভ করা হলো
+    const { mode, content, facebook, instagram, pinterest, twitter, linkedin, youtube, schedule_time } = req.body;
     const files = req.files || [];
 
+    // 🎯 2. সেফ Boolean Conversion (String 'true' অথবা Boolean true চেক)
+    const isTrue = (val) => val === 'true' || val === true;
+
     const platforms = {
-        facebook: facebook === 'true',
-        instagram: instagram === 'true',
-        pinterest: pinterest === 'true',
-        twitter: twitter === 'true'
+        facebook: isTrue(facebook),
+        instagram: isTrue(instagram),
+        pinterest: isTrue(pinterest),
+        twitter: isTrue(twitter),
+        linkedin: isTrue(linkedin),
+        youtube: isTrue(youtube)
     };
 
     try {
