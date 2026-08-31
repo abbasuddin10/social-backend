@@ -1035,13 +1035,29 @@ const uploadSingleFile = async (file, userId, reqHost) => {
 
 app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
     const userId = req.user.id;
-    // 🎯 1. req.body থেকে linkedin এবং youtube রিসিভ করা হলো
-    const { mode, content, facebook, instagram, pinterest, twitter, linkedin, youtube, schedule_time } = req.body;
+    
+    // 🎯 1. req.body থেকে ৪টি মোড, কনটেন্ট এবং প্ল্যাটফর্ম ফিল্ডসমূহ রিসিভ করা
+    const { 
+        mode, 
+        content, 
+        facebook, 
+        instagram, 
+        pinterest, 
+        twitter, 
+        linkedin, 
+        youtube, 
+        schedule_time 
+    } = req.body;
+    
     const files = req.files || [];
 
-    // 🎯 2. সেফ Boolean Conversion (String 'true' অথবা Boolean true চেক)
+    // 🎯 2. Safe Boolean Conversion (String 'true' অথবা Boolean true চেক)
     const isTrue = (val) => val === 'true' || val === true;
 
+    // 🎯 3. মোড ভ্যালিডেশন (ডিফল্ট 'manual')
+    const postMode = mode || 'manual';
+
+    // 🎯 4. ৬টি প্ল্যাটফর্মের অবজেক্ট তৈরি
     const platforms = {
         facebook: isTrue(facebook),
         instagram: isTrue(instagram),
@@ -1052,11 +1068,13 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
     };
 
     try {
-        if (mode === 'schedule') {
+        // ⏰ Dynamic Schedule Handling
+        if (postMode === 'schedule') {
             const baseDate = schedule_time ? new Date(schedule_time) : new Date();
             const savedPosts = [];
 
             if (files.length > 0) {
+                // একাধিক ছবি থাকলে প্রতিটি ছবির জন্য আলাদা দিনের সিডিউল
                 for (let i = 0; i < files.length; i++) {
                     const imageUrl = await uploadSingleFile(files[i], userId, req.get('host'));
                     const postScheduleDate = new Date(baseDate.getTime() + (i * 24 * 60 * 60 * 1000));
@@ -1079,6 +1097,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
                     savedPosts.push(result.rows[0]);
                 }
             } else {
+                // ছবি ছাড়া সরাসরি টেক্সট সিডিউল পোস্ট
                 const query = `
                     INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
                     VALUES ($1, $2, $3, $4, $5, $6) 
@@ -1098,10 +1117,12 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
 
             return res.status(201).json({
                 success: true,
-                message: `${savedPosts.length} days of scheduled posts saved successfully!`,
+                message: `${savedPosts.length} scheduled post(s) saved successfully!`,
                 posts: savedPosts
             });
+
         } else {
+            // 🚀 Direct Posting (fully_ai, ai_caption, manual)
             const imagePaths = [];
             for (const file of files) {
                 const url = await uploadSingleFile(file, userId, req.get('host'));
@@ -1115,7 +1136,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
             `;
             const values = [
                 userId,
-                mode,
+                postMode, // fully_ai, ai_caption, অথবা manual
                 content,
                 JSON.stringify(platforms),
                 null,
@@ -1125,6 +1146,7 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
             const result = await pool.query(query, values);
             const savedPost = result.rows[0];
 
+            // n8n Webhook Triggering
             if (process.env.N8N_WEBHOOK_URL) {
                 try {
                     await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
