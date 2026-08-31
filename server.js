@@ -1212,23 +1212,43 @@ app.post('/api/generate-caption', authenticateToken, async (req, res) => {
         const { prompt } = req.body;
         if (!prompt) return res.status(400).json({ success: false, message: 'Prompt is required' });
 
+        const aiPrompt = `
+You are an expert social media and YouTube SEO content creator.
+Based on this input: "${prompt}", generate JSON data with the following fields:
+1. "caption": A detailed, engaging social media caption with emojis and hashtags (for FB/Instagram/LinkedIn).
+2. "twitter_caption": A punchy, highly engaging tweet under 260 characters including 2-3 trending hashtags.
+3. "youtube_title": A catchy, SEO-friendly YouTube title under 90 characters.
+4. "youtube_description": A detailed YouTube description.
+5. "youtube_tags": A comma-separated string of relevant YouTube tags.
+
+Return ONLY a valid JSON object without markdown syntax or extra text:
+{
+  "caption": "...",
+  "twitter_caption": "...",
+  "youtube_title": "...",
+  "youtube_description": "...",
+  "youtube_tags": "..."
+}
+`;
+
         const response = await ai.models.generateContent({
             model: 'gemini-3.6-flash',
-            contents: `Act as a professional social media manager. Based on this topic/description: "${prompt}", write ONLY ONE single, ready-to-publish, engaging social media post with hashtags and emojis. Do not add intro/outro text.`,
+            contents: aiPrompt,
         });
 
-        const generatedText = typeof response.text === 'function' ? await response.text() : response.text;
+        const rawText = typeof response.text === 'function' ? await response.text() : response.text;
+        const cleanedJson = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+        const parsedData = JSON.parse(cleanedJson);
 
         return res.status(200).json({
             success: true,
-            caption: generatedText.trim()
+            data: parsedData
         });
     } catch (error) {
         console.error("Gemini Error:", error);
         return res.status(500).json({ success: false, error: error.message });
     }
 });
-
 // 👤 ১. ইউজার প্রোফাইল ডাটা পাওয়া
 app.get('/api/user/profile', authenticateToken, async (req, res) => {
     try {
