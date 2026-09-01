@@ -1039,14 +1039,15 @@ app.post('/api/save-post', authenticateToken, upload.fields([
 ]), async (req, res) => {
     const userId = req.user.id;
     
-    // 🎯 ১. req.body থেকে সব ধরণের প্ল্যাটফর্ম ক্যাপশন ও ইউটিউব ডাটা রিসিভ
+    // 🎯 ১. req.body থেকে সব ভ্যালু গ্রহণ (Fallback সহ)
     const { 
         mode, 
-        content,              // সাধারণ সোশ্যাল মিডিয়া ক্যাপশন (FB, Insta, LinkedIn)
-        twitter_caption,      // টুইটার ক্যাপশন
-        youtube_title,        // ইউটিউব টাইটেল
-        youtube_description,  // ইউটিউব ডেসক্রিপশন
-        youtube_tags,         // ইউটিউব ট্যাগস
+        content,               
+        twitter_caption,     
+        twitter_content,      // 👈 ফ্রন্টএন্ড থেকে দুটি নামই সেফটি হিসেবে হ্যান্ডেল করা হলো
+        youtube_title,        
+        youtube_description,  
+        youtube_tags,         
         facebook, 
         instagram, 
         pinterest, 
@@ -1062,6 +1063,10 @@ app.post('/api/save-post', authenticateToken, upload.fields([
     const isTrue = (val) => val === 'true' || val === true;
     const postMode = mode || 'manual';
 
+    // মূল কনটেন্ট যদি ফাঁকা থাকে তবে ইউটিউব ডেসক্রিপশন বা টুইটার ক্যাপশন ব্যাকআপ হিসেবে নেবে
+    const finalMainContent = content || youtube_description || twitter_caption || twitter_content || '';
+    const finalTwitterContent = twitter_caption || twitter_content || content || null;
+
     const platforms = {
         facebook: isTrue(facebook),
         instagram: isTrue(instagram),
@@ -1072,20 +1077,19 @@ app.post('/api/save-post', authenticateToken, upload.fields([
     };
 
     try {
-        // 🎯 ২. মেইন ভিডিও বা ইমেজ ফাইল আপলোড প্রসেস
+        // ফাইল আপলোড...
         const imagePaths = [];
         for (const file of mediaFiles) {
             const url = await uploadSingleFile(file, userId, req.get('host'));
             imagePaths.push(url);
         }
 
-        // 🎯 ৩. ইউজারের কাস্টম থাম্বনেইল আপলোড প্রসেস
         let thumbnailUrl = null;
         if (thumbnailFiles.length > 0) {
             thumbnailUrl = await uploadSingleFile(thumbnailFiles[0], userId, req.get('host'));
         }
 
-        // 🎯 ৪. Neon Database-এ সব ডাটা ইনসার্ট
+        // 🎯 Neon Database Insert Query
         const query = `
             INSERT INTO user_posts 
             (user_id, mode, content, twitter_content, youtube_title, youtube_description, youtube_tags, thumbnail_url, platforms, schedule_time, images) 
@@ -1096,38 +1100,23 @@ app.post('/api/save-post', authenticateToken, upload.fields([
         const values = [
             userId,
             postMode,
-            content || youtube_description || '', 
-            twitter_caption || null,
-            youtube_title || null,
-            youtube_description || content || null, // fallback to main content if empty
-            youtube_tags || null,
-            thumbnailUrl,
-            JSON.stringify(platforms),
-            postMode === 'schedule' && schedule_time ? new Date(schedule_time).toISOString() : null,
-            imagePaths
+            finalMainContent,                    // $3: null হবে না
+            finalTwitterContent,                 // $4: twitter_content কলামে বসবে
+            youtube_title || null,               // $5
+            youtube_description || finalMainContent || null, // $6
+            youtube_tags || null,                // $7
+            thumbnailUrl,                        // $8
+            JSON.stringify(platforms),           // $9
+            postMode === 'schedule' && schedule_time ? new Date(schedule_time).toISOString() : null, // $10
+            imagePaths                           // $11
         ];
 
         const result = await pool.query(query, values);
-        const savedPost = result.rows[0];
-
-        // 🎯 ৫. n8n Webhook-এ ডাটা ফরওয়ার্ড করা
-        if (process.env.N8N_WEBHOOK_URL) {
-            try {
-                await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
-            } catch (n8nError) {
-                console.error('Forwarding to n8n failed:', n8nError.message);
-            }
-        }
-
-        return res.status(201).json({
-            success: true,
-            message: 'Post and YouTube details saved successfully!',
-            post: savedPost
-        });
+        return res.status(201).json({ success: true, post: result.rows[0] });
 
     } catch (error) {
         console.error('Save Post Error:', error.message);
-        res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+        res.status(500).json({ success: false, message: error.message });
     }
 });
 
