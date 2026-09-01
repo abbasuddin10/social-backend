@@ -183,19 +183,30 @@ async function getSocialAnalytics(pageId, pageAccessToken) {
 }
 
 // ২. ডাটাবেস থেকে সেলস ও অর্ডারের আপডেট ডাটা ফেচিং (Neon Postgres)
+// ==========================================
+// 📊 DATABASE ANALYTICS HELPER FUNCTION
+// ==========================================
 async function getDatabaseAnalytics(userId) {
     try {
         const today = new Date().toISOString().split('T')[0];
 
-        // আজকের মোট অর্ডার ও সেলস অ্যামাউন্ট
-        const orderQuery = `
+        // ১. আজকের মোট অর্ডার ও সেলস অ্যামাউন্ট
+        const todayQuery = `
             SELECT COUNT(*) as total_orders, COALESCE(SUM(amount), 0) as total_revenue 
             FROM orders_leads 
             WHERE user_id = $1 AND DATE(created_at) = $2
         `;
-        const orderRes = await pool.query(orderQuery, [userId, today]);
+        const todayRes = await pool.query(todayQuery, [userId, today]);
 
-        // অল-টাইম টপ সেলিং প্রোডাক্ট
+        // ২. চলতি মাসের মোট অর্ডার ও সেলস অ্যামাউন্ট
+        const monthlyQuery = `
+            SELECT COUNT(*) as total_orders, COALESCE(SUM(amount), 0) as total_revenue 
+            FROM orders_leads 
+            WHERE user_id = $1 AND DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)
+        `;
+        const monthlyRes = await pool.query(monthlyQuery, [userId]);
+
+        // ৩. অল-টাইম টপ সেলিং প্রোডাক্ট
         const bestSellerQuery = `
             SELECT product_name, COUNT(*) as total_sales 
             FROM orders_leads 
@@ -207,8 +218,10 @@ async function getDatabaseAnalytics(userId) {
         const bestSellerRes = await pool.query(bestSellerQuery, [userId]);
 
         return {
-            todayOrders: parseInt(orderRes.rows[0].total_orders || 0),
-            todayRevenue: parseFloat(orderRes.rows[0].total_revenue || 0),
+            todayOrders: parseInt(todayRes.rows[0].total_orders || 0),
+            todayRevenue: parseFloat(todayRes.rows[0].total_revenue || 0),
+            monthlyOrders: parseInt(monthlyRes.rows[0].total_orders || 0),
+            monthlyRevenue: parseFloat(monthlyRes.rows[0].total_revenue || 0),
             bestSeller: bestSellerRes.rows[0] ? bestSellerRes.rows[0].product_name : "N/A",
             bestSellerCount: bestSellerRes.rows[0] ? parseInt(bestSellerRes.rows[0].total_sales) : 0
         };
@@ -243,12 +256,12 @@ Generate ONLY the final WhatsApp message text response:
 `;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-3.6-flash',
+            model: 'gemini-2.5-flash',
             contents: systemPrompt
         });
 
-        const generatedText = typeof response.text === 'function' ? await response.text() : response.text;
-        return generatedText.trim();
+        const generatedText = response.text ? response.text.trim() : "";
+        return generatedText;
     } catch (err) {
         console.error("Gemini AI Processing Error:", err);
         return "🤖 দুঃখিত, ডাটা প্রসেস করতে একটি সাময়িক সমস্যা হয়েছে। কিছুক্ষণ পর আবার চেষ্টা করুন।";
@@ -1216,11 +1229,11 @@ Return ONLY a valid JSON object without markdown syntax or extra text:
 `;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-3.6-flash',
+            model: 'gemini-2.5-flash',
             contents: aiPrompt,
         });
 
-        const rawText = typeof response.text === 'function' ? await response.text() : response.text;
+        const rawText = response.text ? response.text.trim() : "";
         const cleanedJson = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
         const parsedData = JSON.parse(cleanedJson);
 
@@ -1233,6 +1246,7 @@ Return ONLY a valid JSON object without markdown syntax or extra text:
         return res.status(500).json({ success: false, error: error.message });
     }
 });
+
 // 👤 ১. ইউজার প্রোফাইল ডাটা পাওয়া
 app.get('/api/user/profile', authenticateToken, async (req, res) => {
     try {
@@ -1354,11 +1368,12 @@ USER COMMAND TO PROCESS: "${user_prompt}"
 `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+      model: 'gemini-2.5-flash',
       contents: systemPrompt,
     });
 
-    const cleanJsonText = response.text.replace(/```json|```/g, '').trim();
+    const rawText = response.text ? response.text.trim() : "";
+    const cleanJsonText = rawText.replace(/```json|```/g, '').trim();
     const parsedPlan = JSON.parse(cleanJsonText);
 
     res.json({
@@ -1646,6 +1661,103 @@ app.get('/auth/youtube/callback', async (req, res) => {
     }
 });
 
+// ==========================================
+// 🌐 WEBSITE / STORE INTEGRATION ROUTES
+// ==========================================
+
+// ==========================================
+// ১. ইউজারের ওয়েবসাইট কানেক্ট / আপডেট করার API
+// ==========================================
+app.post('/api/user/update-website', authenticateToken, async (req, res) => {
+    const { websiteName, websiteUrl } = req.body;
+    const userId = req.user.id; // 🔑 JWT থেকে প্রাপ্ত ইউজারের আইডি
+
+    if (!websiteName || !websiteUrl) {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'ওয়েবসাইটের নাম ও URL আবশ্যক!' 
+        });
+    }
+
+    try {
+        // PostgreSQL ON CONFLICT (UPSERT) দিয়ে সহজ ও ফাস্ট করা হলো
+        const upsertQuery = `
+            INSERT INTO social_accounts (user_id, page_id, page_name, access_token, is_active, platform, updated_at)
+            VALUES ($1, $2, $3, $4, TRUE, 'website', NOW())
+            ON CONFLICT (user_id, platform) 
+            DO UPDATE SET 
+                page_name = EXCLUDED.page_name,
+                access_token = EXCLUDED.access_token,
+                is_active = TRUE,
+                updated_at = NOW();
+        `;
+
+        await pool.query(upsertQuery, [
+            userId, 
+            `web_${userId}`, 
+            websiteName.trim(), 
+            websiteUrl.trim()
+        ]);
+
+        // ইউজার আইডি দিয়ে ইউনিক Webhook URL
+        const backendUrl = process.env.BACKEND_URL || 'https://social-backend-1hwz.onrender.com';
+        const generatedWebhookUrl = `${backendUrl}/webhook/orders/${userId}`;
+
+        return res.status(200).json({
+            success: true,
+            message: 'ওয়েবসাইট সফলভাবে কানেক্ট করা হয়েছে!',
+            webhookUrl: generatedWebhookUrl
+        });
+
+    } catch (err) {
+        console.error("Update Website Error:", err);
+        return res.status(500).json({ 
+            success: false, 
+            message: 'সার্ভার সমস্যা: ' + err.message 
+        });
+    }
+});
+
+// ==========================================
+// ২. ওয়েবসাইটের অর্ডার গ্রহণ করার পাবলিক ওয়েবহুক
+// ==========================================
+app.post('/webhook/orders/:user_id', async (req, res) => {
+    const userId = parseInt(req.params.user_id, 10); // 🔑 ID integer এ রূপান্তর
+    const { order_id, amount, total_amount, customer_name, customer_phone, product_name, status } = req.body;
+
+    if (!userId || isNaN(userId)) {
+        return res.status(400).json({ success: false, message: 'Invalid User ID in webhook URL' });
+    }
+
+    try {
+        // অ্যামাউন্ট সঠিক ফরম্যাটে নিয়ে আসা
+        const rawAmount = amount || total_amount || 0;
+        const parsedAmount = parseFloat(rawAmount) || 0.00;
+
+        const insertOrderQuery = `
+            INSERT INTO orders_leads 
+            (user_id, platform, order_id, customer_name, customer_phone, amount, product_name, status, created_at)
+            VALUES ($1, 'website', $2, $3, $4, $5, $6, $7, NOW())
+        `;
+
+        await pool.query(insertOrderQuery, [
+            userId,
+            order_id ? String(order_id) : `ORD-${Date.now()}`,
+            customer_name || 'Guest Customer',
+            customer_phone || '',
+            parsedAmount,
+            product_name || 'General Product',
+            status || 'completed'
+        ]);
+
+        console.log(`✅ [Website Order] Saved for User ID: ${userId}`);
+        return res.status(200).json({ success: true, message: 'Order data received successfully!' });
+
+    } catch (err) {
+        console.error("Webhook Order Error:", err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`সার্ভার সফলভাবে পোর্ট ${PORT}-এ রান হচ্ছে!`);

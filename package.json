@@ -25,6 +25,7 @@
     "node-cron": "^4.6.0",
     "nodemailer": "^9.0.5",
     "pg": "^8.22.0",
-    "resend": "^6.20.0"
+    "resend": "^6.20.0",
+    "twitter-api-v2": "^1.29.1"
   }
 }
