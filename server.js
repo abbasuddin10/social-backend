@@ -1033,13 +1033,20 @@ const uploadSingleFile = async (file, userId, reqHost) => {
     }
 };
 
-app.post('/api/save-post', authenticateToken, upload.array('images'), async (req, res) => {
+app.post('/api/save-post', authenticateToken, upload.fields([
+    { name: 'images', maxCount: 10 },
+    { name: 'thumbnail', maxCount: 1 }
+]), async (req, res) => {
     const userId = req.user.id;
     
-    // 🎯 1. req.body থেকে ৪টি মোড, কনটেন্ট এবং প্ল্যাটফর্ম ফিল্ডসমূহ রিসিভ করা
+    // 🎯 ১. req.body থেকে সব ধরণের প্ল্যাটফর্ম ক্যাপশন ও ইউটিউব ডাটা রিসিভ
     const { 
         mode, 
-        content, 
+        content,              // সাধারণ সোশ্যাল মিডিয়া ক্যাপশন (FB, Insta, LinkedIn)
+        twitter_caption,      // টুইটার ক্যাপশন
+        youtube_title,        // ইউটিউব টাইটেল
+        youtube_description,  // ইউটিউব ডেসক্রিপশন
+        youtube_tags,         // ইউটিউব ট্যাগস
         facebook, 
         instagram, 
         pinterest, 
@@ -1049,15 +1056,12 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
         schedule_time 
     } = req.body;
     
-    const files = req.files || [];
+    const mediaFiles = req.files?.['images'] || [];
+    const thumbnailFiles = req.files?.['thumbnail'] || [];
 
-    // 🎯 2. Safe Boolean Conversion (String 'true' অথবা Boolean true চেক)
     const isTrue = (val) => val === 'true' || val === true;
-
-    // 🎯 3. মোড ভ্যালিডেশন (ডিফল্ট 'manual')
     const postMode = mode || 'manual';
 
-    // 🎯 4. ৬টি প্ল্যাটফর্মের অবজেক্ট তৈরি
     const platforms = {
         facebook: isTrue(facebook),
         instagram: isTrue(instagram),
@@ -1068,99 +1072,59 @@ app.post('/api/save-post', authenticateToken, upload.array('images'), async (req
     };
 
     try {
-        // ⏰ Dynamic Schedule Handling
-        if (postMode === 'schedule') {
-            const baseDate = schedule_time ? new Date(schedule_time) : new Date();
-            const savedPosts = [];
-
-            if (files.length > 0) {
-                // একাধিক ছবি থাকলে প্রতিটি ছবির জন্য আলাদা দিনের সিডিউল
-                for (let i = 0; i < files.length; i++) {
-                    const imageUrl = await uploadSingleFile(files[i], userId, req.get('host'));
-                    const postScheduleDate = new Date(baseDate.getTime() + (i * 24 * 60 * 60 * 1000));
-
-                    const query = `
-                        INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
-                        VALUES ($1, $2, $3, $4, $5, $6) 
-                        RETURNING *;
-                    `;
-                    const values = [
-                        userId,
-                        'schedule',
-                        content,
-                        JSON.stringify(platforms),
-                        postScheduleDate.toISOString(),
-                        [imageUrl]
-                    ];
-
-                    const result = await pool.query(query, values);
-                    savedPosts.push(result.rows[0]);
-                }
-            } else {
-                // ছবি ছাড়া সরাসরি টেক্সট সিডিউল পোস্ট
-                const query = `
-                    INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
-                    VALUES ($1, $2, $3, $4, $5, $6) 
-                    RETURNING *;
-                `;
-                const values = [
-                    userId,
-                    'schedule',
-                    content,
-                    JSON.stringify(platforms),
-                    baseDate.toISOString(),
-                    []
-                ];
-                const result = await pool.query(query, values);
-                savedPosts.push(result.rows[0]);
-            }
-
-            return res.status(201).json({
-                success: true,
-                message: `${savedPosts.length} scheduled post(s) saved successfully!`,
-                posts: savedPosts
-            });
-
-        } else {
-            // 🚀 Direct Posting (fully_ai, ai_caption, manual)
-            const imagePaths = [];
-            for (const file of files) {
-                const url = await uploadSingleFile(file, userId, req.get('host'));
-                imagePaths.push(url);
-            }
-
-            const query = `
-                INSERT INTO user_posts (user_id, mode, content, platforms, schedule_time, images) 
-                VALUES ($1, $2, $3, $4, $5, $6) 
-                RETURNING *;
-            `;
-            const values = [
-                userId,
-                postMode, // fully_ai, ai_caption, অথবা manual
-                content,
-                JSON.stringify(platforms),
-                null,
-                imagePaths
-            ];
-
-            const result = await pool.query(query, values);
-            const savedPost = result.rows[0];
-
-            // n8n Webhook Triggering
-            if (process.env.N8N_WEBHOOK_URL) {
-                try {
-                    await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
-                } catch (n8nError) {
-                    console.error('Forwarding to n8n failed:', n8nError.message);
-                }
-            }
-
-            return res.status(201).json({
-                success: true,
-                message: 'Post created successfully!',
-                post: savedPost
-            });
+        // 🎯 ২. মেইন ভিডিও বা ইমেজ ফাইল আপলোড প্রসেস
+        const imagePaths = [];
+        for (const file of mediaFiles) {
+            const url = await uploadSingleFile(file, userId, req.get('host'));
+            imagePaths.push(url);
         }
+
+        // 🎯 ৩. ইউজারের কাস্টম থাম্বনেইল আপলোড প্রসেস
+        let thumbnailUrl = null;
+        if (thumbnailFiles.length > 0) {
+            thumbnailUrl = await uploadSingleFile(thumbnailFiles[0], userId, req.get('host'));
+        }
+
+        // 🎯 ৪. Neon Database-এ সব ডাটা ইনসার্ট
+        const query = `
+            INSERT INTO user_posts 
+            (user_id, mode, content, twitter_content, youtube_title, youtube_description, youtube_tags, thumbnail_url, platforms, schedule_time, images) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
+            RETURNING *;
+        `;
+        
+        const values = [
+            userId,
+            postMode,
+            content || youtube_description || '', 
+            twitter_caption || null,
+            youtube_title || null,
+            youtube_description || content || null, // fallback to main content if empty
+            youtube_tags || null,
+            thumbnailUrl,
+            JSON.stringify(platforms),
+            postMode === 'schedule' && schedule_time ? new Date(schedule_time).toISOString() : null,
+            imagePaths
+        ];
+
+        const result = await pool.query(query, values);
+        const savedPost = result.rows[0];
+
+        // 🎯 ৫. n8n Webhook-এ ডাটা ফরওয়ার্ড করা
+        if (process.env.N8N_WEBHOOK_URL) {
+            try {
+                await axios.post(process.env.N8N_WEBHOOK_URL, savedPost);
+            } catch (n8nError) {
+                console.error('Forwarding to n8n failed:', n8nError.message);
+            }
+        }
+
+        return res.status(201).json({
+            success: true,
+            message: 'Post and YouTube details saved successfully!',
+            post: savedPost
+        });
+
     } catch (error) {
         console.error('Save Post Error:', error.message);
         res.status(500).json({ success: false, message: 'Server error: ' + error.message });
