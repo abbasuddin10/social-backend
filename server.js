@@ -1052,12 +1052,12 @@ app.post('/api/save-post', authenticateToken, upload.fields([
 ]), async (req, res) => {
     const userId = req.user.id;
     
-    // 🎯 ১. req.body থেকে সব ভ্যালু গ্রহণ (Fallback সহ)
+    // ১. req.body থেকে সব ভ্যালু গ্রহণ (Fallback সহ)
     const { 
         mode, 
         content,               
         twitter_caption,     
-        twitter_content,      // 👈 ফ্রন্টএন্ড থেকে দুটি নামই সেফটি হিসেবে হ্যান্ডেল করা হলো
+        twitter_content,      
         youtube_title,        
         youtube_description,  
         youtube_tags,         
@@ -1076,7 +1076,6 @@ app.post('/api/save-post', authenticateToken, upload.fields([
     const isTrue = (val) => val === 'true' || val === true;
     const postMode = mode || 'manual';
 
-    // মূল কনটেন্ট যদি ফাঁকা থাকে তবে ইউটিউব ডেসক্রিপশন বা টুইটার ক্যাপশন ব্যাকআপ হিসেবে নেবে
     const finalMainContent = content || youtube_description || twitter_caption || twitter_content || '';
     const finalTwitterContent = twitter_caption || twitter_content || content || null;
 
@@ -1090,7 +1089,7 @@ app.post('/api/save-post', authenticateToken, upload.fields([
     };
 
     try {
-        // ফাইল আপলোড...
+        // ফাইল আপলোড প্রসেস...
         const imagePaths = [];
         for (const file of mediaFiles) {
             const url = await uploadSingleFile(file, userId, req.get('host'));
@@ -1113,19 +1112,37 @@ app.post('/api/save-post', authenticateToken, upload.fields([
         const values = [
             userId,
             postMode,
-            finalMainContent,                    // $3: null হবে না
-            finalTwitterContent,                 // $4: twitter_content কলামে বসবে
-            youtube_title || null,               // $5
-            youtube_description || finalMainContent || null, // $6
-            youtube_tags || null,                // $7
-            thumbnailUrl,                        // $8
-            JSON.stringify(platforms),           // $9
-            postMode === 'schedule' && schedule_time ? new Date(schedule_time).toISOString() : null, // $10
-            imagePaths                           // $11
+            finalMainContent,
+            finalTwitterContent,
+            youtube_title || null,
+            youtube_description || finalMainContent || null,
+            youtube_tags || null,
+            thumbnailUrl,
+            JSON.stringify(platforms),
+            postMode === 'schedule' && schedule_time ? new Date(schedule_time).toISOString() : null,
+            imagePaths
         ];
 
         const result = await pool.query(query, values);
-        return res.status(201).json({ success: true, post: result.rows[0] });
+        const savedPost = result.rows[0];
+
+        // 🚀 ⚡ n8n Webhook-এ ডাটা ফরোয়ার্ড করার কোড (এখানে n8n Webhook কানেক্ট হচ্ছে)
+        // ngrok বা আপনার n8n Production Webhook URL-টি এখানে বসাবেন
+        const n8nWebhookUrl = 'https://luckiness-switch-feminine.ngrok-free.dev/webhook-test/social-media-post'; 
+
+        axios.post(n8nWebhookUrl, {
+            post_id: savedPost.id,
+            user_id: savedPost.user_id,
+            mode: savedPost.mode,
+            content: savedPost.content,
+            twitter_content: savedPost.twitter_content,
+            platforms: savedPost.platforms,
+            images: savedPost.images,
+            schedule_time: savedPost.schedule_time
+        }).catch(err => console.error("⚠️ n8n Trigger Error:", err.message));
+
+        // সফল রেসপন্স
+        return res.status(201).json({ success: true, post: savedPost });
 
     } catch (error) {
         console.error('Save Post Error:', error.message);
