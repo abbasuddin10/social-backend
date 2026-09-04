@@ -256,7 +256,7 @@ Generate ONLY the final WhatsApp message text response:
 `;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3.6-flash',
             contents: systemPrompt
         });
 
@@ -1246,7 +1246,7 @@ Return ONLY a valid JSON object without markdown syntax or extra text:
 `;
 
         const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3.6-flash',
             contents: aiPrompt,
         });
 
@@ -1385,7 +1385,7 @@ USER COMMAND TO PROCESS: "${user_prompt}"
 `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.6-flash',
       contents: systemPrompt,
     });
 
