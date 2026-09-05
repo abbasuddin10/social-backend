@@ -789,8 +789,7 @@ app.get('/auth/linkedin', (req, res) => {
 
     const redirectUri = `${backendUrl}/auth/linkedin/callback`;
     const state = JSON.stringify({ user_id: userId });
-    //const scope = 'openid profile w_member_social email';
-    const scope = 'openid profile w_member_social email rw_organization_admin w_organization_social';
+    const scope = 'openid profile w_member_social email';
 
     const linkedinLoginUrl = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(scope)}`;
     res.redirect(linkedinLoginUrl);
@@ -812,7 +811,6 @@ app.get('/auth/linkedin/callback', async (req, res) => {
         const backendUrl = process.env.BACKEND_URL || 'https://social-backend-1hwz.onrender.com';
         const redirectUri = `${backendUrl}/auth/linkedin/callback`;
 
-        // ১. এক্সেস টোকেন নেওয়া
         const tokenResponse = await axios.post(
             'https://www.linkedin.com/oauth/v2/accessToken',
             new URLSearchParams({
@@ -830,70 +828,25 @@ app.get('/auth/linkedin/callback', async (req, res) => {
         const expiresIn = tokenResponse.data.expires_in || 5184000;
         const expiresAt = new Date(Date.now() + expiresIn * 1000);
 
-        // ২. ইউজারের পার্সোনাল প্রোফাইল ডাটা নেওয়া
         const profileResponse = await axios.get('https://api.linkedin.com/v2/userinfo', {
             headers: { Authorization: `Bearer ${accessToken}` }
         });
 
         const linkedinSub = profileResponse.data.sub;
-        const profileName = profileResponse.data.name || 'Personal Profile';
+        const profileName = profileResponse.data.name || 'LinkedIn User';
 
-        // ৩. ইউজারের অধীনস্থ লিঙ্কডইন পেজসমূহের (Organization) তালিকা ফেচ করা
-        let userPages = [];
-        try {
-            const orgResponse = await axios.get('https://api.linkedin.com/v2/organizationalEntityAcls?q=roleAssignee', {
-                headers: { Authorization: `Bearer ${accessToken}` }
-            });
+        const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2 AND platform = $3';
+        const existing = await pool.query(checkQuery, [linkedinSub, userId, 'linkedin']);
 
-            if (orgResponse.data && orgResponse.data.elements) {
-                for (const element of orgResponse.data.elements) {
-                    const orgUrn = element.organizationalTarget; // e.g., "urn:li:organization:123456"
-                    const orgId = orgUrn.split(':').pop();
-
-                    // পেজের বিস্তারিত নাম ফেচ করা
-                    const pageDetails = await axios.get(`https://api.linkedin.com/v2/organizations/${orgId}`, {
-                        headers: { Authorization: `Bearer ${accessToken}` }
-                    });
-
-                    userPages.push({
-                        id: orgUrn,
-                        name: pageDetails.data.localizedName || `Organization ${orgId}`,
-                        type: 'page'
-                    });
-                }
-            }
-        } catch (orgErr) {
-            console.error("LinkedIn Page Fetch Error:", orgErr.response?.data || orgErr.message);
+        if (existing.rows.length > 0) {
+            const updateQuery = 'UPDATE social_accounts SET access_token = $1, refresh_token = $2, expires_at = $3, page_name = $4, is_active = TRUE, updated_at = NOW() WHERE page_id = $5 AND user_id = $6 AND platform = $7';
+            await pool.query(updateQuery, [accessToken, refreshToken, expiresAt, profileName, linkedinSub, userId, 'linkedin']);
+        } else {
+            const insertQuery = 'INSERT INTO social_accounts (user_id, page_id, page_name, access_token, refresh_token, expires_at, is_active, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)';
+            await pool.query(insertQuery, [userId, linkedinSub, profileName, accessToken, refreshToken, expiresAt, true, 'linkedin']);
         }
 
-        // ৪. অপশনগুলোর পে লোড তৈরি (Personal Profile + Pages)
-        const accountOptions = {
-            userId: userId,
-            accessToken: accessToken,
-            refreshToken: refreshToken,
-            expiresAt: expiresAt,
-            accounts: [
-                { id: linkedinSub, name: `${profileName} (Personal)`, type: 'personal' },
-                ...userPages
-            ]
-        };
-
-        // ৫. সরাসরি ডাটাবেসে সেভ না করে ইউজারের অ্যাপে ডাটা রিডাইরেক্ট করা
-        // (আপনার Flutter App-এর Custom Scheme বা Deep Link ব্যবহার করে)
-        const appDeepLink = `yourapp://linkedin-select?data=${encodeURIComponent(JSON.stringify(accountOptions))}`;
-
-        res.send(`
-            <html>
-            <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-                <h2>🎉 লিঙ্কডইন সফলভাবে অথেন্টিকেট হয়েছে!</h2>
-                <p>অ্যাপে অ্যাকাউন্ট সিলেক্ট করার অপশন আসছে, অনুগ্রহ করে ব্রাউজার বন্ধ করুন।</p>
-                <script>
-                    window.location.href = "${appDeepLink}";
-                </script>
-            </body>
-            </html>
-        `);
-
+        res.send(`<html><body style="font-family: Arial; text-align: center; padding: 50px;"><h2>🎉 LinkedIn অ্যাকাউন্ট সফলভাবে কানেক্ট হয়েছে!</h2><p>ট্যাবটি বন্ধ করে অ্যাপে ফিরে যান।</p></body></html>`);
     } catch (error) {
         console.error("LinkedIn Auth Error:", error.response?.data || error.message);
         res.status(500).send('LinkedIn Authentication failed!');
@@ -1820,41 +1773,6 @@ app.post('/webhook/orders/:user_id', async (req, res) => {
     } catch (err) {
         console.error("Webhook Order Error:", err);
         return res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-// 🎯 ইউজার অ্যাপ থেকে প্রোফাইল/পেজ সিলেক্ট করলে ডাটাবেসে সেভ করার API
-app.post('/api/save-linkedin-account', authenticateToken, async (req, res) => {
-    const { selected_account_id, account_name, account_type, access_token, refresh_token, expires_at } = req.body;
-    const userId = req.user.id;
-
-    if (!selected_account_id || !account_name) {
-        return res.status(400).json({ success: false, message: 'অ্যাঙ্কাউন্ট তথ্য অসম্পূর্ণ!' });
-    }
-
-    try {
-        const checkQuery = 'SELECT * FROM social_accounts WHERE page_id = $1 AND user_id = $2 AND platform = $3';
-        const existing = await pool.query(checkQuery, [selected_account_id, userId, 'linkedin']);
-
-        if (existing.rows.length > 0) {
-            const updateQuery = `
-                UPDATE social_accounts 
-                SET access_token = $1, refresh_token = $2, expires_at = $3, page_name = $4, is_active = TRUE, updated_at = NOW() 
-                WHERE page_id = $5 AND user_id = $6 AND platform = 'linkedin'
-            `;
-            await pool.query(updateQuery, [access_token, refresh_token, expires_at, account_name, selected_account_id, userId]);
-        } else {
-            const insertQuery = `
-                INSERT INTO social_accounts (user_id, page_id, page_name, access_token, refresh_token, expires_at, is_active, platform) 
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            `;
-            await pool.query(insertQuery, [userId, selected_account_id, account_name, access_token, refresh_token, expires_at, true, 'linkedin']);
-        }
-
-        res.status(200).json({ success: true, message: `${account_name} সফলভাবে ডাটাবেসে কানেক্ট হয়েছে!` });
-    } catch (error) {
-        console.error("Save Selected LinkedIn Account Error:", error);
-        res.status(500).json({ success: false, message: 'কানেক্ট করতে ব্যর্থ হয়েছে!' });
     }
 });
 const PORT = process.env.PORT || 3000;
