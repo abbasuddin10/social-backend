@@ -789,7 +789,8 @@ app.get('/auth/linkedin', (req, res) => {
 
     const redirectUri = `${backendUrl}/auth/linkedin/callback`;
     const state = JSON.stringify({ user_id: userId });
-    const scope = 'openid profile w_member_social email';
+    //const scope = 'openid profile w_member_social email';
+    const scope = 'openid profile w_member_social email rw_organization_admin w_organization_social';
 
     const linkedinLoginUrl = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(state)}&scope=${encodeURIComponent(scope)}`;
     res.redirect(linkedinLoginUrl);
